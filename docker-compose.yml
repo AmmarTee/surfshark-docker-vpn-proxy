@@ -1,0 +1,22 @@
+services:
+  vpn-proxy:
+    build: .
+    container_name: surfshark-vpn-proxy
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    ports:
+      - "1080:1080"
+      - "8080:8080"
+    volumes:
+      - ./Open-vpn:/vpn/config:ro
+      - ./auth.txt:/vpn/auth.txt:ro
+    environment:
+      - SOCKS_PORT=1080
+    restart: unless-stopped
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
