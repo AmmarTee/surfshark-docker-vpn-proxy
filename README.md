@@ -1,6 +1,6 @@
-# Personal VPN
+# Surfshark Docker VPN Proxy
 
-Docker-based Surfshark VPN proxy with a web dashboard for managing connections.
+Docker container that runs Surfshark VPN (via OpenVPN) and exposes a SOCKS5 proxy with a web dashboard for managing connections.
 
 ## What it does
 
