@@ -238,6 +238,38 @@ def get_tinyproxy_pid():
     return None
 
 
+# Default DNS servers (Surfshark + Cloudflare fallback)
+_DEFAULT_VPN_DNS = ["162.252.172.57", "149.154.159.92"]
+_ORIGINAL_RESOLV = None
+
+
+def _set_vpn_dns(dns_servers=None):
+    """Write VPN DNS servers to /etc/resolv.conf, backing up the original."""
+    global _ORIGINAL_RESOLV
+    if _ORIGINAL_RESOLV is None:
+        try:
+            with open("/etc/resolv.conf") as f:
+                _ORIGINAL_RESOLV = f.read()
+        except OSError:
+            _ORIGINAL_RESOLV = ""
+    servers = dns_servers if dns_servers else _DEFAULT_VPN_DNS
+    with open("/etc/resolv.conf", "w") as f:
+        for s in servers:
+            f.write(f"nameserver {s}\n")
+
+
+def _restore_dns():
+    """Restore original /etc/resolv.conf after VPN disconnect."""
+    global _ORIGINAL_RESOLV
+    if _ORIGINAL_RESOLV is not None:
+        try:
+            with open("/etc/resolv.conf", "w") as f:
+                f.write(_ORIGINAL_RESOLV)
+        except OSError:
+            pass
+        _ORIGINAL_RESOLV = None
+
+
 def _interface_alive(iface):
     try:
         r = subprocess.run(
@@ -437,6 +469,7 @@ def stop_vpn():
     stop_tinyproxy()
 
     connected_since = None
+    _restore_dns()
     for fpath in [OPENVPN_PID, VPN_MODE_FILE]:
         try:
             os.remove(fpath)
@@ -514,6 +547,7 @@ def start_vpn(config_file):
         if _interface_alive("tun0"):
             with open(VPN_MODE_FILE, "w") as f:
                 f.write("openvpn")
+            _set_vpn_dns()  # Set DNS for tunnel
             connected_since = time.time()
             _last_server_file = config_file
             _last_vpn_mode = "openvpn"
@@ -557,6 +591,10 @@ def start_wireguard(config_file):
             f"PrivateKey = {wg_private_key}",
             content, flags=re.MULTILINE,
         )
+    dns_match = re.search(r"^DNS\s*=\s*(.+)$", content, flags=re.MULTILINE)
+    wg_dns_servers = []
+    if dns_match:
+        wg_dns_servers = [s.strip() for s in dns_match.group(1).split(",") if s.strip()]
     content = re.sub(r"^DNS\s*=.*\n?", "", content, flags=re.MULTILINE)
     if "Table" not in content:
         content = re.sub(r"(\[Interface\])", r"\1\nTable = off", content)
@@ -613,6 +651,9 @@ def start_wireguard(config_file):
     except Exception as e:
         with open(WG_LOG, "a") as logf:
             logf.write(f"[{timestamp}] Routing warning: {e}\n")
+
+    # Set DNS so name resolution works through the tunnel
+    _set_vpn_dns(wg_dns_servers)
 
     with open(VPN_MODE_FILE, "w") as f:
         f.write("wireguard")
