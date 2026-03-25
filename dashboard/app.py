@@ -482,6 +482,12 @@ def start_vpn(config_file):
     stop_vpn()
     time.sleep(1)
 
+    # Fix auth.txt permissions so OpenVPN doesn't warn/reject
+    try:
+        os.chmod(AUTH_FILE, 0o600)
+    except OSError:
+        pass
+
     with open(config_path) as src:
         content = src.read()
     content = re.sub(r"^auth-user-pass.*$", f"auth-user-pass {AUTH_FILE}", content, flags=re.MULTILINE)
@@ -492,7 +498,14 @@ def start_vpn(config_file):
         f.write("")
 
     proc = subprocess.Popen(
-        ["openvpn", "--config", ACTIVE_OVPN, "--log", OPENVPN_LOG, "--writepid", OPENVPN_PID],
+        [
+            "openvpn", "--config", ACTIVE_OVPN,
+            "--log", OPENVPN_LOG,
+            "--writepid", OPENVPN_PID,
+            "--data-ciphers", "AES-256-CBC:AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305",
+            "--data-ciphers-fallback", "AES-256-CBC",
+            "--auth-nocache",
+        ],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
 
@@ -764,6 +777,35 @@ def _resolve_server_host(filename):
     return None
 
 
+def _startup_ping():
+    """Ping all servers once at startup and populate the cache."""
+    import concurrent.futures
+    servers = parse_ovpn_files() + parse_wg_files()
+    # Deduplicate by host to avoid pinging the same host twice (TCP+UDP)
+    host_map = {}  # host -> [filenames]
+    for s in servers:
+        host = _resolve_server_host(s["file"])
+        if host:
+            host_map.setdefault(host, []).append(s["file"])
+
+    now = time.time()
+    def ping_one(host):
+        latency = _ping_host(host)
+        return host, latency
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as pool:
+        futures = {pool.submit(ping_one, h): h for h in host_map}
+        for fut in concurrent.futures.as_completed(futures):
+            try:
+                host, latency = fut.result()
+                entry = {"host": host, "latency_ms": latency,
+                         "reachable": latency is not None, "timestamp": now}
+                for sf in host_map[host]:
+                    _ping_cache[sf] = entry
+            except Exception:
+                pass
+
+
 # ===========================================================================
 # Flask routes
 # ===========================================================================
@@ -967,6 +1009,17 @@ def api_bandwidth():
     })
 
 
+@app.route("/api/ping", methods=["GET"])
+def api_ping_cached():
+    """Return all cached ping results."""
+    results = []
+    for sf, entry in _ping_cache.items():
+        results.append({"file": sf, "host": entry["host"],
+                        "latency_ms": entry["latency_ms"],
+                        "reachable": entry["reachable"]})
+    return jsonify({"ok": True, "results": results})
+
+
 @app.route("/api/ping", methods=["POST"])
 def api_ping():
     data = request.get_json()
@@ -980,10 +1033,6 @@ def api_ping():
     results = []
     for sf in servers:
         sf = str(sf)
-        cached = _ping_cache.get(sf)
-        if cached and now - cached["timestamp"] < 300:
-            results.append({"file": sf, "host": cached["host"], "latency_ms": cached["latency_ms"], "reachable": cached["reachable"]})
-            continue
         host = _resolve_server_host(sf)
         if not host:
             results.append({"file": sf, "host": None, "latency_ms": None, "reachable": False})
@@ -1195,4 +1244,5 @@ if __name__ == "__main__":
     os.makedirs(DATA_DIR, exist_ok=True)
     threading.Thread(target=_health_monitor, daemon=True).start()
     threading.Thread(target=_bandwidth_monitor, daemon=True).start()
+    threading.Thread(target=_startup_ping, daemon=True).start()
     app.run(host="0.0.0.0", port=8080)
