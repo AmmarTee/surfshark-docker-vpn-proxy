@@ -292,6 +292,28 @@ def stop_vpn():
 
     # Stop WireGuard
     try:
+        # Restore routing before tearing down interface
+        route_info = subprocess.run(
+            ["ip", "route", "show", "default"],
+            capture_output=True, text=True
+        )
+        if WG_INTERFACE in route_info.stdout:
+            # Get endpoint route to find original gateway
+            all_routes = subprocess.run(
+                ["ip", "route"], capture_output=True, text=True
+            )
+            gw_match = re.search(r"default via (\S+)", all_routes.stdout)
+            # Find the gateway from any "via" route that isn't the wg default
+            for line in all_routes.stdout.splitlines():
+                if "via" in line and WG_INTERFACE not in line:
+                    m = re.search(r"via (\S+)", line)
+                    if m:
+                        gateway = m.group(1)
+                        subprocess.run(["ip", "route", "del", "default"],
+                                       capture_output=True, text=True)
+                        subprocess.run(["ip", "route", "add", "default", "via", gateway],
+                                       capture_output=True, text=True)
+                        break
         subprocess.run(
             ["wg-quick", "down", WG_INTERFACE],
             capture_output=True, text=True, timeout=10
@@ -392,7 +414,7 @@ def start_wireguard(config_file):
         except OSError:
             pass
 
-    # Copy config to /etc/wireguard/ with injected key
+    # Parse config and inject private key
     os.makedirs("/etc/wireguard", exist_ok=True)
     with open(config_path) as src:
         content = src.read()
@@ -402,6 +424,15 @@ def start_wireguard(config_file):
             f"PrivateKey = {wg_private_key}",
             content, flags=re.MULTILINE
         )
+
+    # Strip DNS line (container uses docker-compose DNS) and add Table = off
+    content = re.sub(r"^DNS\s*=.*\n?", "", content, flags=re.MULTILINE)
+    if "Table" not in content:
+        content = re.sub(
+            r"(\[Interface\])",
+            r"\1\nTable = off",
+            content,
+        )
     with open(WG_CONF, "w") as dst:
         dst.write(content)
 
@@ -409,7 +440,13 @@ def start_wireguard(config_file):
     with open(WG_LOG, "w") as f:
         f.write("")
 
-    # Start WireGuard
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    # Parse Address from config for manual setup
+    addr_match = re.search(r"^Address\s*=\s*(.+)$", content, re.MULTILINE)
+    wg_address = addr_match.group(1).strip() if addr_match else "10.14.0.2/16"
+
+    # Start WireGuard with wg-quick (Table=off avoids sysctl/fwmark issues)
     try:
         result = subprocess.run(
             ["wg-quick", "up", WG_INTERFACE],
@@ -418,9 +455,8 @@ def start_wireguard(config_file):
     except subprocess.TimeoutExpired:
         return False, "WireGuard connection timed out"
 
-    # Log the output
+    # Log wg-quick output
     with open(WG_LOG, "a") as logf:
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
         logf.write(f"[{timestamp}] wg-quick up {WG_INTERFACE}\n")
         if result.stdout:
             logf.write(result.stdout)
@@ -430,6 +466,39 @@ def start_wireguard(config_file):
 
     if result.returncode != 0:
         return False, f"WireGuard failed: {result.stderr.strip()}"
+
+    # Set up routing manually: route all traffic through wg0
+    try:
+        # Get current default gateway
+        route_info = subprocess.run(
+            ["ip", "route", "show", "default"],
+            capture_output=True, text=True
+        )
+        gw_match = re.search(r"default via (\S+)", route_info.stdout)
+        if gw_match:
+            gateway = gw_match.group(1)
+            # Get WireGuard endpoint IP
+            endpoint_info = subprocess.run(
+                ["wg", "show", WG_INTERFACE, "endpoints"],
+                capture_output=True, text=True
+            )
+            ep_match = re.search(r"(\d+\.\d+\.\d+\.\d+):\d+", endpoint_info.stdout)
+            if ep_match:
+                endpoint_ip = ep_match.group(1)
+                # Route endpoint via original gateway so WG tunnel traffic isn't looped
+                subprocess.run(["ip", "route", "add", endpoint_ip, "via", gateway],
+                               capture_output=True, text=True)
+            # Replace default route with wg0
+            subprocess.run(["ip", "route", "del", "default"],
+                           capture_output=True, text=True)
+            subprocess.run(["ip", "route", "add", "default", "dev", WG_INTERFACE],
+                           capture_output=True, text=True)
+
+            with open(WG_LOG, "a") as logf:
+                logf.write(f"[{timestamp}] Routing configured via {WG_INTERFACE}\n")
+    except Exception as e:
+        with open(WG_LOG, "a") as logf:
+            logf.write(f"[{timestamp}] Routing warning: {e}\n")
 
     # Set VPN mode
     with open(VPN_MODE_FILE, "w") as f:
