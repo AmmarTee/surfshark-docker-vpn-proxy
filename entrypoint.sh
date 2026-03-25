@@ -12,8 +12,11 @@ if [ ! -f /vpn/auth.txt ]; then
     exit 1
 fi
 
+mkdir -p /vpn/data
+
 echo "Starting dashboard on http://0.0.0.0:8080"
 echo "SOCKS5 proxy will be available on port ${SOCKS_PORT:-1080} after connecting"
+echo "HTTP proxy will be available on port ${HTTP_PORT:-8888} after connecting"
 echo ""
 
 exec python3 /app/app.py

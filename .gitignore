@@ -6,6 +6,12 @@ wireguard.txt
 Open-vpn/
 Wireguard/
 
+# Runtime data (user preferences, not code)
+data/
+
+# Backup files
+*.bak
+
 # OS
 Thumbs.db
 .DS_Store

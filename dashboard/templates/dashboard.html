@@ -12,20 +12,18 @@
             --accent: #00d4aa;
             --accent-dim: #00a884;
             --danger: #ff4757;
+            --warn: #ffa502;
             --text: #e0e6ed;
             --text-dim: #8899aa;
             --border: #2a3a4a;
         }
-
         * { margin: 0; padding: 0; box-sizing: border-box; }
-
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: var(--bg);
             color: var(--text);
             min-height: 100vh;
         }
-
         .header {
             background: var(--card);
             border-bottom: 1px solid var(--border);
@@ -34,29 +32,18 @@
             align-items: center;
             justify-content: space-between;
         }
-
-        .header h1 {
-            font-size: 20px;
-            font-weight: 600;
-        }
-
+        .header h1 { font-size: 20px; font-weight: 600; }
         .header h1 span { color: var(--accent); }
-
         .proxy-info {
             font-size: 13px;
             color: var(--text-dim);
             background: var(--bg);
             padding: 6px 14px;
             border-radius: 6px;
+            display: flex; gap: 16px;
         }
-
         .proxy-info strong { color: var(--accent); font-family: monospace; }
-
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 24px;
-        }
+        .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
 
         /* Status Card */
         .status-card {
@@ -65,8 +52,8 @@
             padding: 24px;
             margin-bottom: 24px;
             border: 1px solid var(--border);
+            transition: all 0.3s ease;
         }
-
         .status-row {
             display: flex;
             align-items: center;
@@ -74,26 +61,39 @@
             flex-wrap: wrap;
             gap: 16px;
         }
-
         .status-info { display: flex; align-items: center; gap: 16px; }
-
         .status-dot {
-            width: 14px;
-            height: 14px;
+            width: 14px; height: 14px;
             border-radius: 50%;
             background: var(--danger);
             flex-shrink: 0;
+            transition: all 0.3s ease;
         }
-
         .status-dot.connected {
             background: var(--accent);
             box-shadow: 0 0 12px rgba(0, 212, 170, 0.4);
         }
-
+        .status-dot.reconnecting {
+            background: var(--warn);
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse { 50% { opacity: 0.5; } }
         .status-text h2 { font-size: 18px; font-weight: 600; }
         .status-text p { font-size: 13px; color: var(--text-dim); margin-top: 2px; }
-
-        .status-actions { display: flex; gap: 10px; }
+        .status-details {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border);
+        }
+        .status-detail-item {
+            display: flex; flex-direction: column; gap: 2px;
+        }
+        .status-detail-item .label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+        .status-detail-item .value { font-size: 14px; font-weight: 600; font-family: monospace; }
+        .status-actions { display: flex; gap: 10px; align-items: center; }
 
         .btn {
             padding: 10px 24px;
@@ -104,22 +104,14 @@
             cursor: pointer;
             transition: all 0.2s;
         }
-
         .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
-        .btn-disconnect {
-            background: var(--danger);
-            color: white;
-        }
-
+        .btn-disconnect { background: var(--danger); color: white; }
         .btn-disconnect:hover:not(:disabled) { background: #e8414f; }
-
-        .btn-secondary {
-            background: var(--border);
-            color: var(--text);
-        }
-
+        .btn-secondary { background: var(--border); color: var(--text); }
         .btn-secondary:hover:not(:disabled) { background: #3a4a5a; }
+        .btn-accent { background: var(--accent); color: var(--bg); }
+        .btn-accent:hover:not(:disabled) { background: var(--accent-dim); }
+        .btn-small { padding: 6px 14px; font-size: 12px; }
 
         /* Tabs */
         .tabs {
@@ -131,7 +123,6 @@
             padding: 4px;
             border: 1px solid var(--border);
         }
-
         .tab {
             padding: 10px 20px;
             border: none;
@@ -143,16 +134,11 @@
             border-radius: 8px;
             transition: all 0.2s;
         }
-
-        .tab.active {
-            background: var(--accent);
-            color: var(--bg);
-        }
-
+        .tab.active { background: var(--accent); color: var(--bg); }
         .tab:hover:not(.active) { color: var(--text); }
-
         .tab-content { display: none; }
-        .tab-content.active { display: block; }
+        .tab-content.active { display: block; animation: fadeIn 0.2s ease; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 
         /* Server filters */
         .filters {
@@ -160,11 +146,10 @@
             gap: 12px;
             margin-bottom: 16px;
             flex-wrap: wrap;
+            align-items: center;
         }
-
         .search-box {
-            flex: 1;
-            min-width: 200px;
+            flex: 1; min-width: 200px;
             padding: 10px 16px;
             background: var(--card);
             border: 1px solid var(--border);
@@ -172,10 +157,9 @@
             color: var(--text);
             font-size: 14px;
             outline: none;
+            transition: border-color 0.2s;
         }
-
         .search-box:focus { border-color: var(--accent); }
-
         .protocol-toggle {
             display: flex;
             background: var(--card);
@@ -183,7 +167,6 @@
             border: 1px solid var(--border);
             overflow: hidden;
         }
-
         .protocol-btn {
             padding: 10px 16px;
             border: none;
@@ -194,11 +177,19 @@
             cursor: pointer;
             transition: all 0.2s;
         }
-
-        .protocol-btn.active {
-            background: var(--accent);
-            color: var(--bg);
+        .protocol-btn.active { background: var(--accent); color: var(--bg); }
+        .sort-select {
+            padding: 10px 14px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            font-size: 13px;
+            outline: none;
+            cursor: pointer;
         }
+        .sort-select:focus { border-color: var(--accent); }
+        .sort-select option { background: var(--card); color: var(--text); }
 
         /* Server grid */
         .server-grid {
@@ -206,7 +197,6 @@
             grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
             gap: 10px;
         }
-
         .server-item {
             background: var(--card);
             border: 1px solid var(--border);
@@ -218,54 +208,54 @@
             align-items: center;
             justify-content: space-between;
         }
-
         .server-item:hover {
             background: var(--card-hover);
             border-color: var(--accent-dim);
+            transform: translateY(-1px);
         }
-
         .server-item.active-server {
             border-color: var(--accent);
             background: rgba(0, 212, 170, 0.08);
         }
-
-        .server-item.connecting {
-            opacity: 0.6;
-            pointer-events: none;
-        }
-
-        .server-left {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .country-flag {
-            font-size: 24px;
-            width: 36px;
-            text-align: center;
-        }
-
+        .server-left { display: flex; align-items: center; gap: 12px; }
+        .country-flag { font-size: 24px; width: 36px; text-align: center; }
         .server-name { font-weight: 600; font-size: 14px; }
-        .server-city { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
-
+        .server-city { font-size: 12px; color: var(--text-dim); margin-top: 2px; display: flex; gap: 8px; align-items: center; }
+        .server-right { display: flex; align-items: center; gap: 8px; }
         .server-protocol {
-            font-size: 11px;
-            font-weight: 700;
-            padding: 3px 8px;
-            border-radius: 4px;
-            background: var(--bg);
-            color: var(--text-dim);
+            font-size: 11px; font-weight: 700;
+            padding: 3px 8px; border-radius: 4px;
+            background: var(--bg); color: var(--text-dim);
         }
-
+        .ping-dot {
+            width: 8px; height: 8px; border-radius: 50%;
+            display: inline-block;
+        }
+        .ping-dot.good { background: var(--accent); }
+        .ping-dot.medium { background: var(--warn); }
+        .ping-dot.bad { background: var(--danger); }
+        .ping-dot.unknown { background: var(--text-dim); }
+        .ping-ms { font-size: 11px; color: var(--text-dim); }
+        .fav-star {
+            cursor: pointer; font-size: 16px; transition: all 0.2s;
+            background: none; border: none; padding: 2px;
+        }
+        .fav-star:hover { transform: scale(1.2); }
+        .badge {
+            font-size: 10px; font-weight: 700; padding: 2px 6px;
+            border-radius: 3px; text-transform: uppercase;
+        }
+        .badge-active { background: var(--accent); color: var(--bg); }
+        .badge-recent { background: rgba(255,165,2,0.15); color: var(--warn); }
         .connect-icon {
-            color: var(--accent);
-            font-size: 18px;
-            opacity: 0;
-            transition: opacity 0.2s;
+            color: var(--accent); font-size: 18px;
+            opacity: 0; transition: opacity 0.2s;
         }
-
         .server-item:hover .connect-icon { opacity: 1; }
+        .no-results {
+            text-align: center; padding: 40px; color: var(--text-dim);
+            font-size: 14px;
+        }
 
         /* Logs */
         .log-container {
@@ -274,7 +264,6 @@
             border-radius: 10px;
             overflow: hidden;
         }
-
         .log-header {
             display: flex;
             justify-content: space-between;
@@ -282,12 +271,7 @@
             padding: 12px 18px;
             border-bottom: 1px solid var(--border);
         }
-
-        .log-header span {
-            font-size: 14px;
-            font-weight: 600;
-        }
-
+        .log-header span { font-size: 14px; font-weight: 600; }
         .log-body {
             padding: 16px;
             max-height: 500px;
@@ -302,86 +286,50 @@
 
         /* Loading overlay */
         .overlay {
-            display: none;
-            position: fixed;
+            display: none; position: fixed;
             top: 0; left: 0; right: 0; bottom: 0;
             background: rgba(15, 25, 35, 0.85);
             z-index: 100;
-            align-items: center;
-            justify-content: center;
-            flex-direction: column;
-            gap: 16px;
+            align-items: center; justify-content: center;
+            flex-direction: column; gap: 16px;
         }
-
         .overlay.visible { display: flex; }
-
         .spinner {
-            width: 48px;
-            height: 48px;
+            width: 48px; height: 48px;
             border: 4px solid var(--border);
             border-top-color: var(--accent);
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
         }
-
         @keyframes spin { to { transform: rotate(360deg); } }
-
-        .overlay-text {
-            font-size: 16px;
-            font-weight: 500;
-            color: var(--text);
-        }
+        .overlay-text { font-size: 16px; font-weight: 500; color: var(--text); }
 
         /* Toast */
         .toast {
-            position: fixed;
-            bottom: 24px;
-            right: 24px;
-            padding: 14px 24px;
-            border-radius: 10px;
-            font-size: 14px;
-            font-weight: 500;
+            position: fixed; bottom: 24px; right: 24px;
+            padding: 14px 24px; border-radius: 10px;
+            font-size: 14px; font-weight: 500;
             z-index: 200;
-            transform: translateY(80px);
-            opacity: 0;
+            transform: translateY(80px); opacity: 0;
             transition: all 0.3s;
         }
-
         .toast.visible { transform: translateY(0); opacity: 1; }
         .toast.success { background: var(--accent); color: var(--bg); }
         .toast.error { background: var(--danger); color: white; }
 
         /* Settings */
+        .settings-grid { display: flex; flex-direction: column; gap: 16px; }
         .settings-card {
             background: var(--card);
             border: 1px solid var(--border);
             border-radius: 12px;
             padding: 24px;
         }
-
-        .settings-card h3 {
-            font-size: 16px;
-            font-weight: 600;
-            margin-bottom: 6px;
-        }
-
-        .settings-desc {
-            font-size: 13px;
-            color: var(--text-dim);
-            margin-bottom: 20px;
-            line-height: 1.5;
-        }
-
+        .settings-card h3 { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
+        .settings-desc { font-size: 13px; color: var(--text-dim); margin-bottom: 20px; line-height: 1.5; }
         .settings-form { display: flex; flex-direction: column; gap: 18px; }
-
         .setting-row { display: flex; flex-direction: column; gap: 6px; }
-
-        .setting-row label {
-            font-size: 13px;
-            font-weight: 600;
-            color: var(--text);
-        }
-
+        .setting-row label { font-size: 13px; font-weight: 600; color: var(--text); }
         .setting-input {
             padding: 10px 14px;
             background: var(--bg);
@@ -392,58 +340,74 @@
             font-family: 'Consolas', 'Monaco', monospace;
             outline: none;
             max-width: 300px;
+            transition: border-color 0.2s;
         }
-
         .setting-input:focus { border-color: var(--accent); }
-
-        .setting-hint {
-            font-size: 12px;
-            color: var(--text-dim);
-        }
-
-        .setting-actions {
-            display: flex;
-            align-items: center;
-            gap: 14px;
-            margin-top: 4px;
-        }
-
-        .btn-save {
-            background: var(--accent);
-            color: var(--bg);
-            padding: 10px 28px;
-        }
-
+        .setting-hint { font-size: 12px; color: var(--text-dim); }
+        .setting-actions { display: flex; align-items: center; gap: 14px; margin-top: 4px; }
+        .btn-save { background: var(--accent); color: var(--bg); padding: 10px 28px; }
         .btn-save:hover:not(:disabled) { background: var(--accent-dim); }
-
-        .setting-status {
-            font-size: 13px;
-            font-weight: 500;
+        .setting-status { font-size: 13px; font-weight: 500; }
+        .toggle-row {
+            display: flex; align-items: center; gap: 12px; padding: 8px 0;
         }
-
-        .telegram-config {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
+        .toggle {
+            position: relative; width: 44px; height: 24px;
+            background: var(--border); border-radius: 12px;
+            cursor: pointer; transition: background 0.2s;
         }
+        .toggle.active { background: var(--accent); }
+        .toggle::after {
+            content: ''; position: absolute;
+            top: 3px; left: 3px;
+            width: 18px; height: 18px;
+            background: white; border-radius: 50%;
+            transition: transform 0.2s;
+        }
+        .toggle.active::after { transform: translateX(20px); }
+        .toggle-label { font-size: 14px; font-weight: 500; }
 
+        .telegram-config { display: flex; flex-direction: column; gap: 8px; }
         .config-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 10px 16px;
-            background: var(--bg);
-            border-radius: 8px;
-            max-width: 400px;
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 10px 16px; background: var(--bg); border-radius: 8px; max-width: 400px;
         }
-
         .config-item span { font-size: 13px; color: var(--text-dim); }
         .config-item strong { font-size: 14px; font-family: 'Consolas', monospace; }
+
+        /* Profiles */
+        .profiles-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 12px;
+            margin-top: 16px;
+        }
+        .profile-card {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 16px;
+            transition: all 0.2s;
+        }
+        .profile-card:hover { border-color: var(--accent-dim); }
+        .profile-name { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
+        .profile-detail { font-size: 12px; color: var(--text-dim); }
+        .profile-actions { display: flex; gap: 8px; margin-top: 12px; }
+
+        /* DNS test */
+        .dns-result {
+            padding: 12px 16px; border-radius: 8px;
+            font-size: 13px; margin-top: 12px;
+        }
+        .dns-result.secure { background: rgba(0,212,170,0.1); color: var(--accent); }
+        .dns-result.leak { background: rgba(255,71,87,0.1); color: var(--danger); }
+        .dns-result.unknown { background: rgba(136,153,170,0.1); color: var(--text-dim); }
 
         @media (max-width: 600px) {
             .container { padding: 12px; }
             .status-row { flex-direction: column; align-items: flex-start; }
             .header { flex-direction: column; gap: 8px; align-items: flex-start; }
+            .proxy-info { flex-direction: column; gap: 4px; }
         }
     </style>
 </head>
@@ -451,7 +415,8 @@
     <div class="header">
         <h1><span>Surfshark</span> VPN Dashboard</h1>
         <div class="proxy-info" id="proxyInfoHeader">
-            SOCKS5 Proxy: <strong id="headerProxyAddr">127.0.0.1:1080</strong>
+            <span>SOCKS5: <strong id="headerSocksAddr">127.0.0.1:1080</strong></span>
+            <span id="headerHttpProxy">HTTP: <strong id="headerHttpAddr">127.0.0.1:8888</strong></span>
         </div>
     </div>
 
@@ -467,7 +432,38 @@
                     </div>
                 </div>
                 <div class="status-actions">
+                    <button class="btn btn-secondary btn-small" id="btnRandom" onclick="connectRandom()">Random</button>
                     <button class="btn btn-disconnect" id="btnDisconnect" style="display:none" onclick="disconnect()">Disconnect</button>
+                </div>
+            </div>
+            <div class="status-details" id="statusDetails" style="display:none">
+                <div class="status-detail-item">
+                    <span class="label">VPN Mode</span>
+                    <span class="value" id="detailMode">-</span>
+                </div>
+                <div class="status-detail-item">
+                    <span class="label">Server</span>
+                    <span class="value" id="detailServer">-</span>
+                </div>
+                <div class="status-detail-item">
+                    <span class="label">VPN IP</span>
+                    <span class="value" id="detailIp">-</span>
+                </div>
+                <div class="status-detail-item">
+                    <span class="label">Location</span>
+                    <span class="value" id="detailGeo">-</span>
+                </div>
+                <div class="status-detail-item">
+                    <span class="label">Connected</span>
+                    <span class="value" id="detailDuration">-</span>
+                </div>
+                <div class="status-detail-item">
+                    <span class="label">Speed</span>
+                    <span class="value" id="detailSpeed">-</span>
+                </div>
+                <div class="status-detail-item">
+                    <span class="label">Session Data</span>
+                    <span class="value" id="detailData">-</span>
                 </div>
             </div>
         </div>
@@ -476,6 +472,7 @@
         <div class="tabs">
             <button class="tab active" onclick="switchTab('servers', this)">Servers</button>
             <button class="tab" onclick="switchTab('settings', this)">Settings</button>
+            <button class="tab" onclick="switchTab('profiles', this)">Profiles</button>
             <button class="tab" onclick="switchTab('logs', this)">Logs</button>
         </div>
 
@@ -486,48 +483,123 @@
                     <button class="protocol-btn active" onclick="setVpnType('openvpn', this)">OpenVPN</button>
                     <button class="protocol-btn" onclick="setVpnType('wireguard', this)">WireGuard</button>
                 </div>
-                <input type="text" class="search-box" id="searchBox" placeholder="Search country or city..." oninput="filterServers()">
+                <input type="text" class="search-box" id="searchBox" placeholder="Search country or city..." oninput="renderServers()">
                 <div class="protocol-toggle" id="protocolToggle">
                     <button class="protocol-btn active" onclick="setProtocol('UDP', this)">UDP</button>
                     <button class="protocol-btn" onclick="setProtocol('TCP', this)">TCP</button>
                 </div>
+                <select class="sort-select" id="sortSelect" onchange="renderServers()">
+                    <option value="name">Sort: Name</option>
+                    <option value="country">Sort: Country</option>
+                    <option value="latency">Sort: Latency</option>
+                    <option value="recent">Sort: Recent</option>
+                </select>
+                <button class="btn btn-secondary btn-small" onclick="pingVisible()">Ping Visible</button>
             </div>
             <div class="server-grid" id="serverGrid"></div>
         </div>
 
         <!-- Settings Tab -->
         <div class="tab-content" id="tab-settings">
-            <div class="settings-card">
-                <h3>SOCKS5 Proxy Settings</h3>
-                <p class="settings-desc">Configure the SOCKS5 proxy address that Telegram will connect to. After changing, update your Telegram proxy settings to match.</p>
-                <div class="settings-form">
-                    <div class="setting-row">
-                        <label for="settingBind">Bind IP Address</label>
-                        <input type="text" id="settingBind" class="setting-input" value="0.0.0.0" placeholder="0.0.0.0">
-                        <span class="setting-hint">0.0.0.0 = all interfaces, 127.0.0.1 = localhost only</span>
+            <div class="settings-grid">
+                <div class="settings-card">
+                    <h3>SOCKS5 Proxy Settings</h3>
+                    <p class="settings-desc">Configure the SOCKS5 proxy. After changing, update your app proxy settings to match.</p>
+                    <div class="settings-form">
+                        <div class="setting-row">
+                            <label for="settingBind">Bind IP Address</label>
+                            <input type="text" id="settingBind" class="setting-input" value="0.0.0.0" placeholder="0.0.0.0">
+                            <span class="setting-hint">0.0.0.0 = all interfaces, 127.0.0.1 = localhost only</span>
+                        </div>
+                        <div class="setting-row">
+                            <label for="settingPort">Port</label>
+                            <input type="number" id="settingPort" class="setting-input" value="1080" min="1024" max="65535">
+                            <span class="setting-hint">Port for the SOCKS5 proxy (1024-65535)</span>
+                        </div>
                     </div>
-                    <div class="setting-row">
-                        <label for="settingPort">Port</label>
-                        <input type="number" id="settingPort" class="setting-input" value="1080" min="1024" max="65535" placeholder="1080">
-                        <span class="setting-hint">Port for the SOCKS5 proxy (1024-65535)</span>
+                </div>
+                <div class="settings-card">
+                    <h3>HTTP Proxy Settings</h3>
+                    <p class="settings-desc">HTTP/HTTPS forward proxy powered by tinyproxy.</p>
+                    <div class="settings-form">
+                        <div class="toggle-row">
+                            <div class="toggle" id="httpToggle" onclick="toggleHttp()"></div>
+                            <span class="toggle-label">Enable HTTP Proxy</span>
+                        </div>
+                        <div class="setting-row">
+                            <label for="httpBind">Bind IP Address</label>
+                            <input type="text" id="httpBind" class="setting-input" value="0.0.0.0" placeholder="0.0.0.0">
+                        </div>
+                        <div class="setting-row">
+                            <label for="httpPort">Port</label>
+                            <input type="number" id="httpPort" class="setting-input" value="8888" min="1024" max="65535">
+                        </div>
                     </div>
-                    <div class="setting-actions">
-                        <button class="btn btn-save" onclick="saveSettings()">Save &amp; Apply</button>
-                        <span class="setting-status" id="settingStatus"></span>
+                </div>
+                <div class="settings-card">
+                    <h3>Auto-Reconnect</h3>
+                    <p class="settings-desc">Automatically reconnect if the VPN drops. Retries same server 3x, then fails over to a random server.</p>
+                    <div class="toggle-row">
+                        <div class="toggle" id="arToggle" onclick="toggleAutoReconnect()"></div>
+                        <span class="toggle-label">Enable Auto-Reconnect</span>
                     </div>
+                </div>
+                <div class="setting-actions">
+                    <button class="btn btn-save" onclick="saveSettings()">Save &amp; Apply</button>
+                    <span class="setting-status" id="settingStatus"></span>
+                </div>
+                <div class="settings-card">
+                    <h3>DNS Leak Test</h3>
+                    <p class="settings-desc">Check if your DNS queries are leaking outside the VPN tunnel.</p>
+                    <button class="btn btn-secondary btn-small" onclick="runDnsTest()">Run DNS Test</button>
+                    <div id="dnsResult"></div>
+                </div>
+                <div class="settings-card">
+                    <h3>Telegram Configuration</h3>
+                    <p class="settings-desc">Use these settings in Telegram:</p>
+                    <div class="telegram-config">
+                        <div class="config-item"><span>Type</span><strong>SOCKS5</strong></div>
+                        <div class="config-item"><span>Server</span><strong id="tgServer">127.0.0.1</strong></div>
+                        <div class="config-item"><span>Port</span><strong id="tgPort">1080</strong></div>
+                        <div class="config-item"><span>Username</span><strong>-</strong></div>
+                        <div class="config-item"><span>Password</span><strong>-</strong></div>
+                    </div>
+                    <p class="settings-desc" style="margin-top:12px">Telegram > Settings > Advanced > Connection type > Use custom proxy</p>
                 </div>
             </div>
-            <div class="settings-card" style="margin-top:16px">
-                <h3>Telegram Configuration</h3>
-                <p class="settings-desc">Use these settings in Telegram:</p>
-                <div class="telegram-config">
-                    <div class="config-item"><span>Type</span><strong>SOCKS5</strong></div>
-                    <div class="config-item"><span>Server</span><strong id="tgServer">127.0.0.1</strong></div>
-                    <div class="config-item"><span>Port</span><strong id="tgPort">1080</strong></div>
-                    <div class="config-item"><span>Username</span><strong>-</strong></div>
-                    <div class="config-item"><span>Password</span><strong>-</strong></div>
+        </div>
+
+        <!-- Profiles Tab -->
+        <div class="tab-content" id="tab-profiles">
+            <div class="settings-card">
+                <h3>Connection Profiles</h3>
+                <p class="settings-desc">Save server + settings presets for quick switching.</p>
+                <button class="btn btn-accent btn-small" onclick="showProfileForm()">+ New Profile</button>
+                <div id="profileForm" style="display:none; margin-top:16px; padding:16px; background:var(--bg); border-radius:8px;">
+                    <div class="settings-form">
+                        <div class="setting-row">
+                            <label>Name</label>
+                            <input type="text" id="pfName" class="setting-input" placeholder="e.g. Streaming UK" maxlength="50">
+                        </div>
+                        <div class="setting-row">
+                            <label>Server File</label>
+                            <select id="pfServer" class="sort-select" style="max-width:400px"></select>
+                        </div>
+                        <div class="setting-row">
+                            <label>SOCKS5 Port</label>
+                            <input type="number" id="pfSocksPort" class="setting-input" value="1080" min="1024" max="65535">
+                        </div>
+                        <div class="setting-row">
+                            <label>HTTP Port</label>
+                            <input type="number" id="pfHttpPort" class="setting-input" value="8888" min="1024" max="65535">
+                        </div>
+                        <div style="display:flex;gap:8px">
+                            <button class="btn btn-accent btn-small" onclick="createProfile()">Save Profile</button>
+                            <button class="btn btn-secondary btn-small" onclick="hideProfileForm()">Cancel</button>
+                        </div>
+                    </div>
                 </div>
-                <p class="settings-desc" style="margin-top:12px">Telegram > Settings > Advanced > Connection type > Use custom proxy</p>
+                <div class="profiles-grid" id="profilesGrid"></div>
             </div>
         </div>
 
@@ -548,8 +620,6 @@
         <div class="spinner"></div>
         <div class="overlay-text" id="overlayText">Connecting...</div>
     </div>
-
-    <!-- Toast -->
     <div class="toast" id="toast"></div>
 
     <script>
@@ -560,40 +630,99 @@
         let currentServer = null;
         let currentVpnMode = null;
         let statusInterval = null;
+        let bwInterval = null;
+        let favorites = [];
+        let recentFiles = [];
+        let pingResults = {};
+        let prevConnected = null;
+        let _httpEnabled = true;
+        let _autoReconnect = true;
 
-        // Country code to flag emoji
         function countryFlag(code) {
-            return code
-                .toUpperCase()
-                .split("")
-                .map(c => String.fromCodePoint(0x1f1e6 + c.charCodeAt(0) - 65))
-                .join("");
+            return code.toUpperCase().split("").map(c => String.fromCodePoint(0x1f1e6 + c.charCodeAt(0) - 65)).join("");
+        }
+
+        function fmtBytes(b) {
+            if (b < 1024) return b.toFixed(0) + " B";
+            if (b < 1048576) return (b / 1024).toFixed(1) + " KB";
+            if (b < 1073741824) return (b / 1048576).toFixed(1) + " MB";
+            return (b / 1073741824).toFixed(2) + " GB";
+        }
+
+        function fmtSpeed(bps) {
+            if (bps < 1024) return bps.toFixed(0) + " B/s";
+            if (bps < 1048576) return (bps / 1024).toFixed(1) + " KB/s";
+            return (bps / 1048576).toFixed(1) + " MB/s";
+        }
+
+        function fmtDuration(secs) {
+            if (!secs || secs < 0) return "-";
+            const h = Math.floor(secs / 3600);
+            const m = Math.floor((secs % 3600) / 60);
+            const s = Math.floor(secs % 60);
+            if (h > 0) return `${h}h ${m}m ${s}s`;
+            if (m > 0) return `${m}m ${s}s`;
+            return `${s}s`;
+        }
+
+        // Notifications
+        function requestNotif() {
+            if ("Notification" in window && Notification.permission === "default") {
+                Notification.requestPermission();
+            }
+        }
+        function sendNotif(title, body) {
+            if ("Notification" in window && Notification.permission === "granted") {
+                new Notification(title, { body, icon: "" });
+            }
         }
 
         // --- API calls ---
-
         async function fetchStatus() {
             try {
                 const res = await fetch("/api/status");
                 const data = await res.json();
                 updateStatusUI(data);
-            } catch (e) {
-                console.error("Status fetch failed:", e);
-            }
+            } catch (e) { console.error("Status fetch failed:", e); }
         }
 
         async function fetchServers() {
             try {
-                const [ovpnRes, wgRes] = await Promise.all([
-                    fetch("/api/servers"),
-                    fetch("/api/wg/servers")
-                ]);
-                allServers = await ovpnRes.json();
-                wgServers = await wgRes.json();
+                const [ovpnRes, wgRes] = await Promise.all([fetch("/api/servers"), fetch("/api/wg/servers")]);
+                const ovpnData = await ovpnRes.json();
+                const wgData = await wgRes.json();
+                allServers = ovpnData.servers || ovpnData;
+                wgServers = wgData.servers || wgData;
                 renderServers();
-            } catch (e) {
-                console.error("Server fetch failed:", e);
-            }
+            } catch (e) { console.error("Server fetch failed:", e); }
+        }
+
+        async function fetchFavorites() {
+            try {
+                const res = await fetch("/api/favorites");
+                const data = await res.json();
+                favorites = data.favorites || [];
+                renderServers();
+            } catch (e) {}
+        }
+
+        async function fetchRecent() {
+            try {
+                const res = await fetch("/api/recent");
+                const data = await res.json();
+                recentFiles = (data.recent || []).map(r => r.file);
+            } catch (e) {}
+        }
+
+        async function toggleFavorite(e, file) {
+            e.stopPropagation();
+            const isFav = favorites.includes(file);
+            await fetch("/api/favorites", {
+                method: isFav ? "DELETE" : "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ server: file }),
+            });
+            await fetchFavorites();
         }
 
         async function connectTo(serverFile) {
@@ -606,16 +735,10 @@
                 });
                 const data = await res.json();
                 hideOverlay();
-                if (data.ok) {
-                    showToast(data.message, "success");
-                } else {
-                    showToast(data.error || data.message, "error");
-                }
-                fetchStatus();
-            } catch (e) {
-                hideOverlay();
-                showToast("Connection failed: " + e.message, "error");
-            }
+                if (data.ok) { showToast(data.message, "success"); }
+                else { showToast(data.error || data.message, "error"); }
+                fetchStatus(); fetchRecent();
+            } catch (e) { hideOverlay(); showToast("Connection failed: " + e.message, "error"); }
         }
 
         async function connectWg(serverFile) {
@@ -628,16 +751,28 @@
                 });
                 const data = await res.json();
                 hideOverlay();
-                if (data.ok) {
-                    showToast(data.message, "success");
-                } else {
-                    showToast(data.error || data.message, "error");
-                }
-                fetchStatus();
-            } catch (e) {
+                if (data.ok) { showToast(data.message, "success"); }
+                else { showToast(data.error || data.message, "error"); }
+                fetchStatus(); fetchRecent();
+            } catch (e) { hideOverlay(); showToast("Connection failed: " + e.message, "error"); }
+        }
+
+        async function connectRandom() {
+            const mode = vpnType;
+            const proto = currentProtocol;
+            showOverlay("Connecting to random server...");
+            try {
+                const res = await fetch("/api/connect/random", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ vpn_mode: mode, protocol: proto }),
+                });
+                const data = await res.json();
                 hideOverlay();
-                showToast("Connection failed: " + e.message, "error");
-            }
+                if (data.ok) { showToast(data.message, "success"); }
+                else { showToast(data.error || data.message, "error"); }
+                fetchStatus(); fetchRecent();
+            } catch (e) { hideOverlay(); showToast("Connection failed", "error"); }
         }
 
         async function disconnect() {
@@ -647,10 +782,7 @@
                 hideOverlay();
                 showToast("VPN disconnected", "success");
                 fetchStatus();
-            } catch (e) {
-                hideOverlay();
-                showToast("Disconnect failed", "error");
-            }
+            } catch (e) { hideOverlay(); showToast("Disconnect failed", "error"); }
         }
 
         async function refreshLogs() {
@@ -660,65 +792,153 @@
                 const el = document.getElementById("logBody");
                 el.textContent = data.log || "No logs available.";
                 el.scrollTop = el.scrollHeight;
-                const logTitle = document.getElementById("logTitle");
-                if (logTitle) {
-                    logTitle.textContent = currentVpnMode === "wireguard" ? "WireGuard Log" : "OpenVPN Log";
+                document.getElementById("logTitle").textContent = currentVpnMode === "wireguard" ? "WireGuard Log" : "OpenVPN Log";
+            } catch (e) { document.getElementById("logBody").textContent = "Failed to load logs."; }
+        }
+
+        async function pingVisible() {
+            const grid = document.getElementById("serverGrid");
+            const cards = grid.querySelectorAll("[data-file]");
+            const files = Array.from(cards).map(c => c.dataset.file).slice(0, 20);
+            if (!files.length) return;
+            try {
+                const res = await fetch("/api/ping", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ servers: files }),
+                });
+                const data = await res.json();
+                if (data.ok) {
+                    data.results.forEach(r => { pingResults[r.file] = r; });
+                    renderServers();
                 }
-            } catch (e) {
-                document.getElementById("logBody").textContent = "Failed to load logs.";
-            }
+            } catch (e) { showToast("Ping failed", "error"); }
+        }
+
+        async function fetchBandwidth() {
+            try {
+                const res = await fetch("/api/bandwidth");
+                const data = await res.json();
+                document.getElementById("detailSpeed").textContent = "\u2193 " + fmtSpeed(data.rx_speed) + "  \u2191 " + fmtSpeed(data.tx_speed);
+                document.getElementById("detailData").textContent = "\u2193 " + fmtBytes(data.rx_total) + "  \u2191 " + fmtBytes(data.tx_total);
+            } catch (e) {}
+        }
+
+        async function fetchGeoIp() {
+            try {
+                const res = await fetch("/api/geoip");
+                const data = await res.json();
+                if (data.ok) {
+                    document.getElementById("detailGeo").textContent = `${data.city}, ${data.country} (${data.isp})`;
+                }
+            } catch (e) {}
+        }
+
+        async function runDnsTest() {
+            const el = document.getElementById("dnsResult");
+            el.innerHTML = '<div class="dns-result unknown">Running DNS test...</div>';
+            try {
+                const res = await fetch("/api/dnstest");
+                const data = await res.json();
+                const cls = data.status === "leak" ? "leak" : data.status === "secure" ? "secure" : "unknown";
+                el.innerHTML = `<div class="dns-result ${cls}">${data.message}</div>`;
+            } catch (e) { el.innerHTML = '<div class="dns-result unknown">DNS test failed</div>'; }
         }
 
         // --- UI Updates ---
-
         function updateStatusUI(data) {
             const dot = document.getElementById("statusDot");
             const title = document.getElementById("statusTitle");
             const sub = document.getElementById("statusSub");
             const btnDc = document.getElementById("btnDisconnect");
+            const details = document.getElementById("statusDetails");
 
             currentServer = data.current_server;
             currentVpnMode = data.vpn_mode;
 
+            // Notifications on state change
+            if (prevConnected !== null && prevConnected !== data.connected) {
+                if (data.connected) sendNotif("VPN Connected", data.current_server || "");
+                else sendNotif("VPN Disconnected", "");
+            }
+            if (data.reconnecting && !prevConnected) {
+                sendNotif("VPN Reconnecting", `Attempt ${data.reconnect_attempts}`);
+            }
+            prevConnected = data.connected;
+
+            if (data.reconnecting) {
+                dot.className = "status-dot reconnecting";
+                title.textContent = `Reconnecting... (attempt ${data.reconnect_attempts})`;
+                sub.textContent = "VPN connection dropped, auto-reconnecting";
+                btnDc.style.display = "block";
+                details.style.display = "none";
+                return;
+            }
+
             if (data.connected) {
-                dot.classList.add("connected");
+                dot.className = "status-dot connected";
                 const vpnLabel = data.vpn_mode === "wireguard" ? "WireGuard" : "OpenVPN";
                 title.textContent = "Connected via " + vpnLabel;
-                let details = [];
-                if (data.current_server) details.push("Server: " + data.current_server);
-                if (data.vpn_ip) details.push("IP: " + data.vpn_ip);
-                const displayBind = (data.socks_bind === "0.0.0.0") ? "127.0.0.1" : data.socks_bind;
-                details.push("SOCKS5: " + displayBind + ":" + data.socks_port);
-                sub.textContent = details.join("  |  ");
+                sub.textContent = "";
                 btnDc.style.display = "block";
-                updateProxyDisplay(data.socks_bind, data.socks_port);
+                details.style.display = "grid";
+
+                document.getElementById("detailMode").textContent = vpnLabel;
+                document.getElementById("detailServer").textContent = data.current_server || "-";
+                document.getElementById("detailIp").textContent = data.vpn_ip || "-";
+
+                if (data.connected_since) {
+                    const dur = Math.floor(Date.now() / 1000 - data.connected_since);
+                    document.getElementById("detailDuration").textContent = fmtDuration(dur);
+                }
+
+                fetchGeoIp();
+                updateProxyDisplay(data.socks_bind, data.socks_port, data.http_proxy_enabled, data.http_proxy_port);
             } else {
-                dot.classList.remove("connected");
+                dot.className = "status-dot";
                 title.textContent = "Disconnected";
                 sub.textContent = "Select a server below to connect";
                 btnDc.style.display = "none";
+                details.style.display = "none";
             }
-
             renderServers();
         }
 
         function renderServers() {
             const grid = document.getElementById("serverGrid");
             const search = document.getElementById("searchBox").value.toLowerCase();
+            const sortBy = document.getElementById("sortSelect").value;
             const isWg = vpnType === "wireguard";
-            const sourceServers = isWg ? wgServers : allServers;
+            let sourceServers = isWg ? [...wgServers] : [...allServers];
 
-            const filtered = sourceServers.filter(s => {
+            let filtered = sourceServers.filter(s => {
                 if (!isWg && s.protocol !== currentProtocol) return false;
                 if (search) {
-                    return (
-                        s.country.toLowerCase().includes(search) ||
+                    return s.country.toLowerCase().includes(search) ||
                         s.city.toLowerCase().includes(search) ||
-                        s.country_code.toLowerCase().includes(search)
-                    );
+                        s.country_code.toLowerCase().includes(search);
                 }
                 return true;
             });
+
+            // Sort
+            if (sortBy === "name") filtered.sort((a, b) => a.country.localeCompare(b.country) || a.city.localeCompare(b.city));
+            else if (sortBy === "country") filtered.sort((a, b) => a.country_code.localeCompare(b.country_code));
+            else if (sortBy === "latency") filtered.sort((a, b) => {
+                const la = pingResults[a.file]?.latency_ms ?? 9999;
+                const lb = pingResults[b.file]?.latency_ms ?? 9999;
+                return la - lb;
+            });
+            else if (sortBy === "recent") filtered.sort((a, b) => {
+                const ia = recentFiles.indexOf(a.file);
+                const ib = recentFiles.indexOf(b.file);
+                return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+            });
+
+            if (!filtered.length) {
+                grid.innerHTML = '<div class="no-results">No servers match your search.</div>';
+                return;
+            }
 
             grid.innerHTML = filtered.map(s => {
                 const hostname = isWg
@@ -726,27 +946,37 @@
                     : s.file.replace(".ovpn", "").replace("_" + s.protocol.toLowerCase(), "");
                 const isActive = currentServer && currentServer === hostname;
                 const connectFn = isWg ? `connectWg('${s.file}')` : `connectTo('${s.file}')`;
+                const isFav = favorites.includes(s.file);
+                const isRecent = recentFiles.includes(s.file);
+                const ping = pingResults[s.file];
+                let pingHtml = '';
+                if (ping) {
+                    const cls = ping.latency_ms === null ? 'unknown' : ping.latency_ms < 100 ? 'good' : ping.latency_ms < 200 ? 'medium' : 'bad';
+                    pingHtml = `<span class="ping-dot ${cls}"></span><span class="ping-ms">${ping.latency_ms !== null ? ping.latency_ms + 'ms' : '?'}</span>`;
+                }
                 return `
-                    <div class="server-item ${isActive ? 'active-server' : ''}"
-                         onclick="${connectFn}">
+                    <div class="server-item ${isActive ? 'active-server' : ''}" onclick="${connectFn}" data-file="${s.file}">
                         <div class="server-left">
                             <div class="country-flag">${countryFlag(s.country_code)}</div>
                             <div>
                                 <div class="server-name">${s.country}</div>
-                                <div class="server-city">${s.city}</div>
+                                <div class="server-city">
+                                    ${s.city}
+                                    ${pingHtml}
+                                    ${isRecent ? '<span class="badge badge-recent">RECENT</span>' : ''}
+                                </div>
                             </div>
                         </div>
-                        <div style="display:flex;align-items:center;gap:8px">
+                        <div class="server-right">
+                            <button class="fav-star" onclick="toggleFavorite(event,'${s.file}')">${isFav ? '\u2605' : '\u2606'}</button>
                             <span class="server-protocol">${s.protocol}</span>
-                            ${isActive ? '<span style="color:var(--accent);font-size:13px;font-weight:600">ACTIVE</span>' : '<span class="connect-icon">&#9654;</span>'}
+                            ${isActive ? '<span class="badge badge-active">ACTIVE</span>' : '<span class="connect-icon">&#9654;</span>'}
                         </div>
-                    </div>
-                `;
+                    </div>`;
             }).join("");
         }
 
         // --- Controls ---
-
         function switchTab(name, btn) {
             document.querySelectorAll(".tab-content").forEach(el => el.classList.remove("active"));
             document.querySelectorAll(".tab").forEach(el => el.classList.remove("active"));
@@ -754,6 +984,7 @@
             btn.classList.add("active");
             if (name === "logs") refreshLogs();
             if (name === "settings") loadSettings();
+            if (name === "profiles") loadProfiles();
         }
 
         function setVpnType(type, btn) {
@@ -771,16 +1002,11 @@
             renderServers();
         }
 
-        function filterServers() { renderServers(); }
-
         function showOverlay(text) {
             document.getElementById("overlayText").textContent = text;
             document.getElementById("overlay").classList.add("visible");
         }
-
-        function hideOverlay() {
-            document.getElementById("overlay").classList.remove("visible");
-        }
+        function hideOverlay() { document.getElementById("overlay").classList.remove("visible"); }
 
         function showToast(msg, type) {
             const t = document.getElementById("toast");
@@ -790,68 +1016,172 @@
         }
 
         // --- Settings ---
-
         async function loadSettings() {
             try {
                 const res = await fetch("/api/settings");
                 const data = await res.json();
                 document.getElementById("settingBind").value = data.socks_bind;
                 document.getElementById("settingPort").value = data.socks_port;
-                updateProxyDisplay(data.socks_bind, data.socks_port);
-            } catch (e) {
-                console.error("Settings fetch failed:", e);
-            }
+                document.getElementById("httpBind").value = data.http_proxy_bind || "0.0.0.0";
+                document.getElementById("httpPort").value = data.http_proxy_port || 8888;
+                _httpEnabled = data.http_proxy_enabled !== false;
+                _autoReconnect = data.auto_reconnect !== false;
+                document.getElementById("httpToggle").classList.toggle("active", _httpEnabled);
+                document.getElementById("arToggle").classList.toggle("active", _autoReconnect);
+                updateProxyDisplay(data.socks_bind, data.socks_port, _httpEnabled, data.http_proxy_port);
+            } catch (e) { console.error("Settings fetch failed:", e); }
+        }
+
+        function toggleHttp() {
+            _httpEnabled = !_httpEnabled;
+            document.getElementById("httpToggle").classList.toggle("active", _httpEnabled);
+        }
+        function toggleAutoReconnect() {
+            _autoReconnect = !_autoReconnect;
+            document.getElementById("arToggle").classList.toggle("active", _autoReconnect);
         }
 
         async function saveSettings() {
-            const bind = document.getElementById("settingBind").value.trim();
-            const port = parseInt(document.getElementById("settingPort").value, 10);
             const status = document.getElementById("settingStatus");
-
-            if (!bind || isNaN(port)) {
-                status.textContent = "Invalid values";
-                status.style.color = "var(--danger)";
-                return;
-            }
-
+            const payload = {
+                socks_bind: document.getElementById("settingBind").value.trim(),
+                socks_port: parseInt(document.getElementById("settingPort").value, 10),
+                http_proxy_enabled: _httpEnabled,
+                http_proxy_bind: document.getElementById("httpBind").value.trim(),
+                http_proxy_port: parseInt(document.getElementById("httpPort").value, 10),
+                auto_reconnect: _autoReconnect,
+            };
             try {
                 const res = await fetch("/api/settings", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ socks_bind: bind, socks_port: port }),
+                    body: JSON.stringify(payload),
                 });
                 const data = await res.json();
                 if (data.ok) {
                     status.textContent = "Saved!";
                     status.style.color = "var(--accent)";
-                    updateProxyDisplay(data.socks_bind, data.socks_port);
-                    showToast("Proxy settings updated", "success");
+                    updateProxyDisplay(data.socks_bind, data.socks_port, data.http_proxy_enabled, data.http_proxy_port);
+                    showToast("Settings updated", "success");
                 } else {
                     status.textContent = data.error;
                     status.style.color = "var(--danger)";
                     showToast(data.error, "error");
                 }
-            } catch (e) {
-                status.textContent = "Failed to save";
-                status.style.color = "var(--danger)";
-            }
+            } catch (e) { status.textContent = "Failed"; status.style.color = "var(--danger)"; }
             setTimeout(() => { status.textContent = ""; }, 3000);
         }
 
-        function updateProxyDisplay(bind, port) {
-            const displayAddr = (bind === "0.0.0.0") ? "127.0.0.1" : bind;
-            document.getElementById("headerProxyAddr").textContent = displayAddr + ":" + port;
-            const tgServer = document.getElementById("tgServer");
-            const tgPort = document.getElementById("tgPort");
-            if (tgServer) tgServer.textContent = displayAddr;
-            if (tgPort) tgPort.textContent = port;
+        function updateProxyDisplay(bind, port, httpEnabled, httpPort) {
+            const addr = (bind === "0.0.0.0") ? "127.0.0.1" : bind;
+            document.getElementById("headerSocksAddr").textContent = addr + ":" + port;
+            const httpEl = document.getElementById("headerHttpProxy");
+            if (httpEnabled) {
+                httpEl.style.display = "inline";
+                document.getElementById("headerHttpAddr").textContent = addr + ":" + (httpPort || 8888);
+            } else {
+                httpEl.style.display = "none";
+            }
+            const tgS = document.getElementById("tgServer");
+            const tgP = document.getElementById("tgPort");
+            if (tgS) tgS.textContent = addr;
+            if (tgP) tgP.textContent = port;
+        }
+
+        // --- Profiles ---
+        async function loadProfiles() {
+            try {
+                const res = await fetch("/api/profiles");
+                const data = await res.json();
+                const grid = document.getElementById("profilesGrid");
+                const profiles = data.profiles || [];
+                if (!profiles.length) {
+                    grid.innerHTML = '<p style="color:var(--text-dim);padding:16px 0">No profiles yet. Create one above.</p>';
+                    return;
+                }
+                grid.innerHTML = profiles.map(p => `
+                    <div class="profile-card">
+                        <div class="profile-name">${esc(p.name)}</div>
+                        <div class="profile-detail">${esc(p.server)} &middot; ${p.vpn_mode} &middot; SOCKS:${p.socks_port} HTTP:${p.http_port || '-'}</div>
+                        <div class="profile-actions">
+                            <button class="btn btn-accent btn-small" onclick="activateProfile('${esc(p.name)}')">Connect</button>
+                            <button class="btn btn-secondary btn-small" onclick="deleteProfile('${esc(p.name)}')">Delete</button>
+                        </div>
+                    </div>
+                `).join("");
+            } catch (e) {}
+        }
+
+        function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+
+        function showProfileForm() {
+            document.getElementById("profileForm").style.display = "block";
+            // Populate server select
+            const sel = document.getElementById("pfServer");
+            const all = [...allServers, ...wgServers];
+            sel.innerHTML = all.map(s => `<option value="${s.file}">${s.country} - ${s.city} (${s.protocol})</option>`).join("");
+        }
+        function hideProfileForm() { document.getElementById("profileForm").style.display = "none"; }
+
+        async function createProfile() {
+            const name = document.getElementById("pfName").value.trim();
+            const server = document.getElementById("pfServer").value;
+            if (!name || !server) { showToast("Name and server required", "error"); return; }
+            const isWg = server.endsWith(".conf");
+            try {
+                const res = await fetch("/api/profiles", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        name, server,
+                        vpn_mode: isWg ? "wireguard" : "openvpn",
+                        socks_port: parseInt(document.getElementById("pfSocksPort").value, 10) || 1080,
+                        http_port: parseInt(document.getElementById("pfHttpPort").value, 10) || 8888,
+                    }),
+                });
+                const data = await res.json();
+                if (data.ok) { showToast("Profile created", "success"); hideProfileForm(); loadProfiles(); }
+                else { showToast(data.error, "error"); }
+            } catch (e) { showToast("Failed to create profile", "error"); }
+        }
+
+        async function activateProfile(name) {
+            showOverlay("Activating profile...");
+            try {
+                const res = await fetch("/api/profiles/activate", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ name }),
+                });
+                const data = await res.json();
+                hideOverlay();
+                if (data.ok) { showToast(data.message, "success"); }
+                else { showToast(data.error || data.message, "error"); }
+                fetchStatus();
+            } catch (e) { hideOverlay(); showToast("Failed", "error"); }
+        }
+
+        async function deleteProfile(name) {
+            try {
+                await fetch("/api/profiles", {
+                    method: "DELETE",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ name }),
+                });
+                loadProfiles();
+                showToast("Profile deleted", "success");
+            } catch (e) {}
         }
 
         // --- Init ---
+        requestNotif();
         fetchServers();
         fetchStatus();
+        fetchFavorites();
+        fetchRecent();
         loadSettings();
         statusInterval = setInterval(fetchStatus, 10000);
+        bwInterval = setInterval(fetchBandwidth, 2000);
     </script>
 </body>
 </html>

@@ -9,6 +9,9 @@ RUN apk add --no-cache \
     curl \
     python3 \
     py3-pip \
+    tinyproxy \
+    bind-tools \
+    iputils \
     git \
     build-base \
     && git clone https://github.com/rofl0r/microsocks.git /tmp/microsocks \
@@ -24,6 +27,6 @@ COPY dashboard/ /app/
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 1080 8080
+EXPOSE 1080 8080 8888
 
 ENTRYPOINT ["/entrypoint.sh"]

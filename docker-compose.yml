@@ -12,11 +12,13 @@ services:
     ports:
       - "1080:1080"
       - "8080:8080"
+      - "8888:8888"
     volumes:
       - ./Open-vpn:/vpn/config:ro
       - ./auth.txt:/vpn/auth.txt:ro
       - ./Wireguard:/vpn/wireguard:ro
       - ./wireguard.txt:/vpn/wireguard.txt:ro
+      - ./data:/vpn/data
     environment:
       - SOCKS_PORT=1080
     restart: unless-stopped
