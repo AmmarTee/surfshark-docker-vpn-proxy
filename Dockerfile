@@ -2,6 +2,8 @@ FROM alpine:3.20
 
 RUN apk add --no-cache \
     openvpn \
+    wireguard-tools \
+    iptables \
     bash \
     curl \
     python3 \

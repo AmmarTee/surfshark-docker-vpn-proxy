@@ -16,6 +16,12 @@ OPENVPN_LOG = "/var/log/openvpn.log"
 OPENVPN_PID = "/var/run/openvpn.pid"
 SOCKS_PORT = int(os.environ.get("SOCKS_PORT", "1080"))
 SOCKS_BIND = os.environ.get("SOCKS_BIND", "0.0.0.0")
+WG_CONFIG_DIR = "/vpn/wireguard"
+WG_KEY_FILE = "/vpn/wireguard.txt"
+WG_INTERFACE = "wg0"
+WG_CONF = f"/etc/wireguard/{WG_INTERFACE}.conf"
+WG_LOG = "/var/log/wireguard.log"
+VPN_MODE_FILE = "/tmp/vpn_mode"
 
 # Country code to name mapping
 COUNTRY_NAMES = {
@@ -69,7 +75,7 @@ CITY_NAMES = {
     "mel": "Melbourne", "mfm": "Macau", "mia": "Miami", "mil": "Milan",
     "mla": "Valletta", "mnl": "Manila", "mon": "Montreal", "mrs": "Marseille",
     "mum": "Mumbai", "mvd": "Montevideo", "nas": "Nassau", "nic": "Nicosia",
-    "nyt": "Naypyidaw", "oma": "Omaha", "opo": "Porto", "osl": "Oslo",
+    "nyc": "New York", "nyt": "Naypyidaw", "oma": "Omaha", "opo": "Porto", "osl": "Oslo",
     "pac": "Panama City", "par": "Paris", "pbh": "Thimphu", "per": "Perth",
     "phx": "Phoenix", "pnh": "Phnom Penh", "prg": "Prague", "qro": "Queretaro",
     "qvu": "Vaduz", "rab": "Rabat", "rig": "Riga", "rkv": "Reykjavik",
@@ -111,6 +117,30 @@ def parse_ovpn_files():
     return servers
 
 
+def parse_wg_files():
+    """Parse all WireGuard .conf files and return structured server list."""
+    servers = []
+    config_path = Path(WG_CONFIG_DIR)
+    if not config_path.exists():
+        return servers
+
+    for f in sorted(config_path.glob("*.conf")):
+        name = f.stem
+        match = re.match(r"^([a-z]{2})-([a-z]{3})$", name)
+        if not match:
+            continue
+        country_code, city_code = match.groups()
+        servers.append({
+            "file": f.name,
+            "country_code": country_code.upper(),
+            "country": COUNTRY_NAMES.get(country_code, country_code.upper()),
+            "city_code": city_code,
+            "city": CITY_NAMES.get(city_code, city_code.upper()),
+            "protocol": "WG",
+        })
+    return servers
+
+
 def get_openvpn_pid():
     """Get the running OpenVPN PID, or None."""
     try:
@@ -138,24 +168,28 @@ def get_microsocks_pid():
 
 def get_vpn_status():
     """Get current VPN connection status."""
-    pid = get_openvpn_pid()
+    vpn_mode = "openvpn"
+    try:
+        with open(VPN_MODE_FILE) as f:
+            vpn_mode = f.read().strip() or "openvpn"
+    except FileNotFoundError:
+        pass
+
     connected = False
-    tun_up = False
     current_server = None
     vpn_ip = None
 
-    if pid:
-        # Check if tun0 exists
+    if vpn_mode == "wireguard":
+        # Check WireGuard interface
         try:
             result = subprocess.run(
-                ["ip", "link", "show", "tun0"],
+                ["ip", "link", "show", WG_INTERFACE],
                 capture_output=True, text=True, timeout=5
             )
-            tun_up = result.returncode == 0
+            if result.returncode == 0:
+                connected = True
         except subprocess.TimeoutExpired:
             pass
-
-        connected = tun_up
 
         if connected:
             try:
@@ -168,24 +202,60 @@ def get_vpn_status():
             except subprocess.TimeoutExpired:
                 pass
 
-    # Read current active config
-    if os.path.exists(ACTIVE_OVPN):
-        try:
-            with open(ACTIVE_OVPN) as f:
-                for line in f:
-                    if line.startswith("remote "):
-                        parts = line.strip().split()
-                        if len(parts) >= 2:
-                            current_server = parts[1]
-                        break
-        except OSError:
-            pass
+        if os.path.exists(WG_CONF):
+            try:
+                with open(WG_CONF) as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith("Endpoint"):
+                            parts = line.split("=", 1)
+                            if len(parts) == 2:
+                                current_server = parts[1].strip().split(":")[0]
+                            break
+            except OSError:
+                pass
+    else:
+        pid = get_openvpn_pid()
+        if pid:
+            try:
+                result = subprocess.run(
+                    ["ip", "link", "show", "tun0"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0:
+                    connected = True
+            except subprocess.TimeoutExpired:
+                pass
+
+            if connected:
+                try:
+                    result = subprocess.run(
+                        ["curl", "-s", "--max-time", "5", "https://api.ipify.org"],
+                        capture_output=True, text=True, timeout=10
+                    )
+                    if result.returncode == 0 and result.stdout.strip():
+                        vpn_ip = result.stdout.strip()
+                except subprocess.TimeoutExpired:
+                    pass
+
+        if os.path.exists(ACTIVE_OVPN):
+            try:
+                with open(ACTIVE_OVPN) as f:
+                    for line in f:
+                        if line.startswith("remote "):
+                            parts = line.strip().split()
+                            if len(parts) >= 2:
+                                current_server = parts[1]
+                            break
+            except OSError:
+                pass
 
     socks_pid = get_microsocks_pid()
 
     return {
         "connected": connected,
-        "openvpn_running": pid is not None,
+        "vpn_mode": vpn_mode,
+        "openvpn_running": get_openvpn_pid() is not None,
         "socks_running": socks_pid is not None,
         "current_server": current_server,
         "vpn_ip": vpn_ip,
@@ -205,12 +275,12 @@ def read_log(lines=50):
 
 
 def stop_vpn():
-    """Stop OpenVPN and microsocks."""
+    """Stop OpenVPN, WireGuard, and microsocks."""
+    # Stop OpenVPN
     pid = get_openvpn_pid()
     if pid:
         try:
             os.kill(pid, signal.SIGTERM)
-            # Wait for process to die
             for _ in range(10):
                 try:
                     os.kill(pid, 0)
@@ -220,6 +290,16 @@ def stop_vpn():
         except ProcessLookupError:
             pass
 
+    # Stop WireGuard
+    try:
+        subprocess.run(
+            ["wg-quick", "down", WG_INTERFACE],
+            capture_output=True, text=True, timeout=10
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    # Stop microsocks
     socks_pid = get_microsocks_pid()
     if socks_pid:
         try:
@@ -227,11 +307,12 @@ def stop_vpn():
         except ProcessLookupError:
             pass
 
-    # Clean up PID file
-    try:
-        os.remove(OPENVPN_PID)
-    except FileNotFoundError:
-        pass
+    # Clean up
+    for fpath in [OPENVPN_PID, VPN_MODE_FILE]:
+        try:
+            os.remove(fpath)
+        except FileNotFoundError:
+            pass
 
 
 def start_vpn(config_file):
@@ -272,6 +353,9 @@ def start_vpn(config_file):
                 capture_output=True, text=True, timeout=5
             )
             if result.returncode == 0:
+                # Set VPN mode
+                with open(VPN_MODE_FILE, "w") as f:
+                    f.write("openvpn")
                 # Start microsocks
                 socks_pid = get_microsocks_pid()
                 if not socks_pid:
@@ -285,6 +369,104 @@ def start_vpn(config_file):
         time.sleep(1)
 
     return False, "VPN tunnel failed to establish within 30 seconds. Check logs."
+
+
+def start_wireguard(config_file):
+    """Start WireGuard with the given config file and microsocks."""
+    config_path = os.path.join(WG_CONFIG_DIR, config_file)
+    if not os.path.exists(config_path):
+        return False, f"Config file not found: {config_file}"
+
+    # Stop any running VPN first
+    stop_vpn()
+    time.sleep(1)
+
+    # Read private key from wireguard.txt
+    wg_private_key = None
+    if os.path.exists(WG_KEY_FILE):
+        try:
+            with open(WG_KEY_FILE) as f:
+                lines = f.read().strip().splitlines()
+                if len(lines) >= 2:
+                    wg_private_key = lines[1].strip()
+        except OSError:
+            pass
+
+    # Copy config to /etc/wireguard/ with injected key
+    os.makedirs("/etc/wireguard", exist_ok=True)
+    with open(config_path) as src:
+        content = src.read()
+    if wg_private_key:
+        content = re.sub(
+            r"^PrivateKey\s*=\s*.*$",
+            f"PrivateKey = {wg_private_key}",
+            content, flags=re.MULTILINE
+        )
+    with open(WG_CONF, "w") as dst:
+        dst.write(content)
+
+    # Clear old log
+    with open(WG_LOG, "w") as f:
+        f.write("")
+
+    # Start WireGuard
+    try:
+        result = subprocess.run(
+            ["wg-quick", "up", WG_INTERFACE],
+            capture_output=True, text=True, timeout=30
+        )
+    except subprocess.TimeoutExpired:
+        return False, "WireGuard connection timed out"
+
+    # Log the output
+    with open(WG_LOG, "a") as logf:
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        logf.write(f"[{timestamp}] wg-quick up {WG_INTERFACE}\n")
+        if result.stdout:
+            logf.write(result.stdout)
+        if result.stderr:
+            logf.write(result.stderr)
+        logf.write("\n")
+
+    if result.returncode != 0:
+        return False, f"WireGuard failed: {result.stderr.strip()}"
+
+    # Set VPN mode
+    with open(VPN_MODE_FILE, "w") as f:
+        f.write("wireguard")
+
+    # Start microsocks
+    socks_pid = get_microsocks_pid()
+    if not socks_pid:
+        subprocess.Popen(
+            ["microsocks", "-i", SOCKS_BIND, "-p", str(SOCKS_PORT)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+
+    return True, "WireGuard connected successfully"
+
+
+def read_wg_log(lines=50):
+    """Read WireGuard log and append live interface status."""
+    log_content = ""
+    try:
+        with open(WG_LOG) as f:
+            all_lines = f.readlines()
+            log_content = "".join(all_lines[-lines:])
+    except FileNotFoundError:
+        log_content = "No WireGuard log yet.\n"
+
+    try:
+        result = subprocess.run(
+            ["wg", "show"], capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            log_content += "\n--- WireGuard Interface Status ---\n"
+            log_content += result.stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    return log_content
 
 
 # --- Routes ---
@@ -319,6 +501,25 @@ def api_connect():
     return jsonify({"ok": ok, "message": msg})
 
 
+@app.route("/api/wg/servers")
+def api_wg_servers():
+    return jsonify(parse_wg_files())
+
+
+@app.route("/api/wg/connect", methods=["POST"])
+def api_wg_connect():
+    data = request.get_json()
+    if not data or "server" not in data:
+        return jsonify({"ok": False, "error": "No server specified"}), 400
+
+    server_file = data["server"]
+    if not re.match(r"^[a-z]{2}-[a-z]{3}\.conf$", server_file):
+        return jsonify({"ok": False, "error": "Invalid server file"}), 400
+
+    ok, msg = start_wireguard(server_file)
+    return jsonify({"ok": ok, "message": msg})
+
+
 @app.route("/api/disconnect", methods=["POST"])
 def api_disconnect():
     stop_vpn()
@@ -329,6 +530,14 @@ def api_disconnect():
 def api_logs():
     lines = request.args.get("lines", 100, type=int)
     lines = min(lines, 500)
+    vpn_mode = "openvpn"
+    try:
+        with open(VPN_MODE_FILE) as f:
+            vpn_mode = f.read().strip() or "openvpn"
+    except FileNotFoundError:
+        pass
+    if vpn_mode == "wireguard":
+        return jsonify({"log": read_wg_log(lines)})
     return jsonify({"log": read_log(lines)})
 
 

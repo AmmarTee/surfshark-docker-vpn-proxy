@@ -482,8 +482,12 @@
         <!-- Servers Tab -->
         <div class="tab-content active" id="tab-servers">
             <div class="filters">
-                <input type="text" class="search-box" id="searchBox" placeholder="Search country or city..." oninput="filterServers()">
                 <div class="protocol-toggle">
+                    <button class="protocol-btn active" onclick="setVpnType('openvpn', this)">OpenVPN</button>
+                    <button class="protocol-btn" onclick="setVpnType('wireguard', this)">WireGuard</button>
+                </div>
+                <input type="text" class="search-box" id="searchBox" placeholder="Search country or city..." oninput="filterServers()">
+                <div class="protocol-toggle" id="protocolToggle">
                     <button class="protocol-btn active" onclick="setProtocol('UDP', this)">UDP</button>
                     <button class="protocol-btn" onclick="setProtocol('TCP', this)">TCP</button>
                 </div>
@@ -531,7 +535,7 @@
         <div class="tab-content" id="tab-logs">
             <div class="log-container">
                 <div class="log-header">
-                    <span>OpenVPN Log</span>
+                    <span id="logTitle">VPN Log</span>
                     <button class="btn btn-secondary" onclick="refreshLogs()">Refresh</button>
                 </div>
                 <div class="log-body" id="logBody">Loading logs...</div>
@@ -550,8 +554,11 @@
 
     <script>
         let allServers = [];
+        let wgServers = [];
         let currentProtocol = "UDP";
+        let vpnType = "openvpn";
         let currentServer = null;
+        let currentVpnMode = null;
         let statusInterval = null;
 
         // Country code to flag emoji
@@ -577,8 +584,12 @@
 
         async function fetchServers() {
             try {
-                const res = await fetch("/api/servers");
-                allServers = await res.json();
+                const [ovpnRes, wgRes] = await Promise.all([
+                    fetch("/api/servers"),
+                    fetch("/api/wg/servers")
+                ]);
+                allServers = await ovpnRes.json();
+                wgServers = await wgRes.json();
                 renderServers();
             } catch (e) {
                 console.error("Server fetch failed:", e);
@@ -586,9 +597,31 @@
         }
 
         async function connectTo(serverFile) {
-            showOverlay("Connecting to VPN...");
+            showOverlay("Connecting via OpenVPN...");
             try {
                 const res = await fetch("/api/connect", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ server: serverFile }),
+                });
+                const data = await res.json();
+                hideOverlay();
+                if (data.ok) {
+                    showToast(data.message, "success");
+                } else {
+                    showToast(data.error || data.message, "error");
+                }
+                fetchStatus();
+            } catch (e) {
+                hideOverlay();
+                showToast("Connection failed: " + e.message, "error");
+            }
+        }
+
+        async function connectWg(serverFile) {
+            showOverlay("Connecting via WireGuard...");
+            try {
+                const res = await fetch("/api/wg/connect", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ server: serverFile }),
@@ -627,6 +660,10 @@
                 const el = document.getElementById("logBody");
                 el.textContent = data.log || "No logs available.";
                 el.scrollTop = el.scrollHeight;
+                const logTitle = document.getElementById("logTitle");
+                if (logTitle) {
+                    logTitle.textContent = currentVpnMode === "wireguard" ? "WireGuard Log" : "OpenVPN Log";
+                }
             } catch (e) {
                 document.getElementById("logBody").textContent = "Failed to load logs.";
             }
@@ -641,10 +678,12 @@
             const btnDc = document.getElementById("btnDisconnect");
 
             currentServer = data.current_server;
+            currentVpnMode = data.vpn_mode;
 
             if (data.connected) {
                 dot.classList.add("connected");
-                title.textContent = "Connected";
+                const vpnLabel = data.vpn_mode === "wireguard" ? "WireGuard" : "OpenVPN";
+                title.textContent = "Connected via " + vpnLabel;
                 let details = [];
                 if (data.current_server) details.push("Server: " + data.current_server);
                 if (data.vpn_ip) details.push("IP: " + data.vpn_ip);
@@ -666,9 +705,11 @@
         function renderServers() {
             const grid = document.getElementById("serverGrid");
             const search = document.getElementById("searchBox").value.toLowerCase();
+            const isWg = vpnType === "wireguard";
+            const sourceServers = isWg ? wgServers : allServers;
 
-            const filtered = allServers.filter(s => {
-                if (s.protocol !== currentProtocol) return false;
+            const filtered = sourceServers.filter(s => {
+                if (!isWg && s.protocol !== currentProtocol) return false;
                 if (search) {
                     return (
                         s.country.toLowerCase().includes(search) ||
@@ -680,11 +721,14 @@
             });
 
             grid.innerHTML = filtered.map(s => {
-                const hostname = s.file.replace(".ovpn", "").replace("_" + s.protocol.toLowerCase(), "");
+                const hostname = isWg
+                    ? s.file.replace(".conf", "") + ".prod.surfshark.com"
+                    : s.file.replace(".ovpn", "").replace("_" + s.protocol.toLowerCase(), "");
                 const isActive = currentServer && currentServer === hostname;
+                const connectFn = isWg ? `connectWg('${s.file}')` : `connectTo('${s.file}')`;
                 return `
                     <div class="server-item ${isActive ? 'active-server' : ''}"
-                         onclick="connectTo('${s.file}')">
+                         onclick="${connectFn}">
                         <div class="server-left">
                             <div class="country-flag">${countryFlag(s.country_code)}</div>
                             <div>
@@ -712,9 +756,17 @@
             if (name === "settings") loadSettings();
         }
 
+        function setVpnType(type, btn) {
+            vpnType = type;
+            btn.parentElement.querySelectorAll(".protocol-btn").forEach(el => el.classList.remove("active"));
+            btn.classList.add("active");
+            document.getElementById("protocolToggle").style.display = type === "openvpn" ? "flex" : "none";
+            renderServers();
+        }
+
         function setProtocol(proto, btn) {
             currentProtocol = proto;
-            document.querySelectorAll(".protocol-btn").forEach(el => el.classList.remove("active"));
+            btn.parentElement.querySelectorAll(".protocol-btn").forEach(el => el.classList.remove("active"));
             btn.classList.add("active");
             renderServers();
         }
