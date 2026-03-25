@@ -2,6 +2,10 @@
 auth.txt
 wireguard.txt
 
+# VPN configs (contain keys/certs)
+Open-vpn/
+Wireguard/
+
 # OS
 Thumbs.db
 .DS_Store
