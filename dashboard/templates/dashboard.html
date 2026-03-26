@@ -6,21 +6,29 @@
     <title>Surfshark VPN Dashboard</title>
     <style>
         :root {
-            --bg: #0b1117;
-            --bg2: #0f1923;
-            --card: #161f2b;
-            --card-hover: #1c2a3a;
-            --accent: #00d4aa;
-            --accent-dim: #00a884;
-            --danger: #ff4757;
-            --warn: #ffa502;
-            --text: #e0e6ed;
-            --text-dim: #6b7d8e;
-            --border: #1e2d3d;
+            --bg: #091015;
+            --bg2: #10212d;
+            --card: #132734;
+            --card-hover: #173243;
+            --accent: #18d0b2;
+            --accent-dim: #0ea389;
+            --danger: #f14668;
+            --warn: #f8b83d;
+            --text: #e6edf4;
+            --text-dim: #8fa7ba;
+            --border: #224154;
             --sidebar-w: 260px;
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; }
+        body {
+            font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif;
+            background: radial-gradient(1200px 600px at 85% -20%, rgba(24,208,178,0.14), transparent 60%),
+                        radial-gradient(1000px 500px at -20% 120%, rgba(38,123,255,0.12), transparent 60%),
+                        var(--bg);
+            color: var(--text);
+            height: 100vh;
+            overflow: hidden;
+        }
 
         /* ---- Layout ---- */
         .app { display: flex; height: 100vh; }
@@ -92,6 +100,8 @@
         .btn-danger:hover:not(:disabled) { background: #e8414f; }
         .btn-ghost { background: var(--border); color: var(--text-dim); }
         .btn-ghost:hover:not(:disabled) { background: #2a3a4a; color: var(--text); }
+        .btn-warn { background: var(--warn); color: #1f2830; }
+        .btn-warn:hover:not(:disabled) { background: #d69a31; }
 
         /* ---- Status Banner ---- */
         .status-banner {
@@ -187,7 +197,7 @@
 
         /* ---- Live Log Panel ---- */
         .log-panel {
-            position: fixed; right: 0; top: 0; width: 380px; height: 100vh;
+            position: fixed; right: 0; top: 0; width: 420px; height: 100vh;
             background: var(--bg2); border-left: 1px solid var(--border);
             display: flex; flex-direction: column;
             transform: translateX(100%); transition: transform 0.25s ease;
@@ -313,6 +323,10 @@
         .toast.visible { transform: translateY(0); opacity: 1; }
         .toast.success { background: var(--accent); color: var(--bg); }
         .toast.error { background: var(--danger); color: #fff; }
+
+        @media (max-width: 1100px) {
+            .log-panel { width: 100%; }
+        }
     </style>
 </head>
 <body>
@@ -352,7 +366,8 @@
             <div class="topbar-actions">
                 <button class="btn btn-ghost" onclick="toggleLogPanel()">Live Log</button>
                 <button class="btn btn-ghost" id="btnRandom" onclick="connectRandom()">Random</button>
-                <button class="btn btn-danger" id="btnDisconnect" style="display:none" onclick="disconnect()">Disconnect</button>
+                <button class="btn btn-warn" id="btnReconnect" style="display:none" onclick="reconnectNow()">Reconnect Now</button>
+                <button class="btn btn-danger" id="btnDisconnect" style="display:none" onclick="disconnect()">Stop Connection</button>
             </div>
         </div>
         <div class="content">
@@ -421,6 +436,34 @@
                         <h3>Auto-Reconnect</h3>
                         <p class="desc">Reconnect on VPN drop. Retries 3x, then fails over to random.</p>
                         <div class="toggle-row"><div class="toggle" id="arToggle" onclick="toggleAR()"></div><span style="font-size:13px">Enable Auto-Reconnect</span></div>
+                    </div>
+                    <div class="s-card">
+                        <h3>Boot Auto-Start</h3>
+                        <p class="desc">Container-start only: reconnects using preferred target or last successful connection.</p>
+                        <div class="toggle-row"><div class="toggle" id="asToggle" onclick="toggleAS()"></div><span style="font-size:13px">Enable Auto-Start on Container Boot</span></div>
+                        <div class="s-row"><label>Preferred Mode</label>
+                            <select id="asMode" class="filter-select" style="max-width:260px">
+                                <option value="">Use last successful mode</option>
+                                <option value="openvpn">OpenVPN</option>
+                                <option value="wireguard">WireGuard</option>
+                            </select>
+                        </div>
+                        <div class="s-row"><label>Preferred Server</label>
+                            <select id="asServer" class="filter-select" style="max-width:360px">
+                                <option value="">Use last successful server</option>
+                            </select>
+                        </div>
+                        <div class="s-row"><label>Reconnect Policy</label>
+                            <select id="failoverScope" class="filter-select" style="max-width:320px">
+                                <option value="global">Retry then random global failover</option>
+                                <option value="same_mode">Retry then random same-mode failover</option>
+                                <option value="none">Retry only, no failover</option>
+                            </select>
+                        </div>
+                        <div class="s-actions">
+                            <button class="btn btn-accent" onclick="saveAutostartSettings()">Save Auto-Start</button>
+                            <span class="s-status" id="autostartStatus"></span>
+                        </div>
                     </div>
                     <div class="s-actions">
                         <button class="btn btn-accent" onclick="saveSettings()">Save & Apply</button>
@@ -492,8 +535,9 @@
 let allServers=[], wgServers=[], currentProto="UDP", vpnType="openvpn";
 let currentServer=null, currentVpnMode=null;
 let favorites=[], recentFiles=[], pingResults={};
-let prevConnected=null, _httpEnabled=true, _autoReconnect=true;
+let prevConnected=null, _httpEnabled=true, _autoReconnect=true, _autoStartEnabled=false;
 let logPollTimer=null, statusTimer=null, bwTimer=null;
+let _autostartConfig={};
 
 function flag(cc){return cc.toUpperCase().split("").map(c=>String.fromCodePoint(0x1f1e6+c.charCodeAt(0)-65)).join("")}
 function fmtB(b){if(b<1024)return b.toFixed(0)+" B";if(b<1048576)return(b/1024).toFixed(1)+" KB";if(b<1073741824)return(b/1048576).toFixed(1)+" MB";return(b/1073741824).toFixed(2)+" GB"}
@@ -528,10 +572,12 @@ function startLiveLog(){
 function stopLiveLog(){if(logPollTimer){clearInterval(logPollTimer);logPollTimer=null}}
 async function pollLiveLog(){
     try{
-        const r=await fetch("/api/logs?lines=80");
-        const d=await r.json();
+        const [vpnRes,evtRes]=await Promise.all([fetch("/api/logs?lines=200"),fetch("/api/events?lines=120")]);
+        const d=await vpnRes.json();
+        const ev=await evtRes.json();
+        const events=(ev.events||[]).map(x=>`[${x.ts}] [${x.kind}] ${x.message}`).join("\n");
         const el=document.getElementById("livePanelBody");
-        el.textContent=d.log||"No logs.";
+        el.textContent=("[VPN]\n"+(d.log||"No VPN logs."))+"\n\n[EVENTS]\n"+(events||"No events.");
         el.scrollTop=el.scrollHeight;
     }catch(e){}
 }
@@ -549,6 +595,7 @@ async function fetchServers(){
         const[a,b]=await Promise.all([fetch("/api/servers"),fetch("/api/wg/servers")]);
         const ad=await a.json(),bd=await b.json();
         allServers=ad.servers||ad;wgServers=bd.servers||bd;renderServers();
+        populateAutostartServerOptions();
     }catch(e){}
 }
 async function fetchPingCache(){try{const r=await fetch("/api/ping");const d=await r.json();if(d.ok)(d.results||[]).forEach(r=>{pingResults[r.file]=r});renderServers()}catch(e){}}
@@ -590,6 +637,16 @@ async function disconnect(){
     catch(e){hideOverlay();showToast("Failed","error")}
 }
 
+async function reconnectNow(){
+    showOverlay("Reconnecting now...");startLogStream();
+    try{
+        const r=await fetch("/api/reconnect-now",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({vpn_mode:currentVpnMode})});
+        const d=await r.json();stopLogStream();hideOverlay();
+        d.ok?showToast(d.message||"Reconnected","success"):showToast(d.error||d.message||"Reconnect failed","error");
+        fetchStatus();fetchRecent();
+    }catch(e){stopLogStream();hideOverlay();showToast("Reconnect failed","error")}
+}
+
 // Log streaming during overlay
 let logStreamTimer=null;
 function startLogStream(){
@@ -625,7 +682,7 @@ async function fetchGeo(){try{const r=await fetch("/api/geoip");const d=await r.
 function updateUI(d){
     currentServer=d.current_server;currentVpnMode=d.vpn_mode;
     const dot=document.getElementById("bannerDot"),title=document.getElementById("bannerTitle"),sub=document.getElementById("bannerSub");
-    const stats=document.getElementById("bannerStats"),btnDc=document.getElementById("btnDisconnect");
+    const stats=document.getElementById("bannerStats"),btnDc=document.getElementById("btnDisconnect"),btnRc=document.getElementById("btnReconnect");
     const sDot=document.getElementById("sidebarDot"),sLabel=document.getElementById("sidebarLabel"),sMeta=document.getElementById("sidebarMeta");
 
     if(prevConnected!==null&&prevConnected!==d.connected){d.connected?notify("VPN Connected",d.current_server||""):notify("VPN Disconnected","")}
@@ -635,14 +692,16 @@ function updateUI(d){
         dot.className="banner-dot warn";sDot.className="st-dot warn";
         title.textContent=`Reconnecting (attempt ${d.reconnect_attempts})`;
         sLabel.innerHTML="<strong>Reconnecting...</strong>";
-        sub.textContent="";btnDc.style.display="inline-block";stats.style.display="none";sMeta.style.display="none";
+        const why=d.last_reconnect_reason?`Reason: ${d.last_reconnect_reason}`:"";
+        const err=d.last_reconnect_error?` | Last error: ${d.last_reconnect_error}`:"";
+        sub.textContent=(why+err).trim();btnDc.style.display="inline-block";btnRc.style.display="none";stats.style.display="none";sMeta.style.display="none";
         return;
     }
     if(d.connected){
         const vl=d.vpn_mode==="wireguard"?"WireGuard":"OpenVPN";
         dot.className="banner-dot on";sDot.className="st-dot on";
         title.textContent="Connected via "+vl;sub.textContent="";
-        btnDc.style.display="inline-block";stats.style.display="flex";
+        btnDc.style.display="inline-block";btnRc.style.display="inline-block";stats.style.display="flex";
         document.getElementById("bMode").textContent=vl;
         document.getElementById("bServer").textContent=d.current_server||"-";
         document.getElementById("bIp").textContent=d.vpn_ip||"-";
@@ -655,8 +714,9 @@ function updateUI(d){
         updateBadges(d.socks_bind,d.socks_port,d.http_proxy_enabled,d.http_proxy_port);
     } else {
         dot.className="banner-dot";sDot.className="st-dot";
-        title.textContent="Disconnected";sub.textContent="Select a server to connect";
-        btnDc.style.display="none";stats.style.display="none";
+        title.textContent="Disconnected";
+        sub.textContent=d.last_reconnect_error?`Last issue: ${d.last_reconnect_error}`:"Select a server to connect";
+        btnDc.style.display="none";btnRc.style.display="none";stats.style.display="none";
         sLabel.innerHTML="Disconnected";sMeta.style.display="none";
     }
     renderServers();
@@ -716,10 +776,57 @@ async function loadSettings(){
         document.getElementById("httpToggle").classList.toggle("active",_httpEnabled);
         document.getElementById("arToggle").classList.toggle("active",_autoReconnect);
         updateBadges(d.socks_bind,d.socks_port,_httpEnabled,d.http_proxy_port);
+        loadAutostartSettings();
     }catch(e){}
 }
 function toggleHttp(){_httpEnabled=!_httpEnabled;document.getElementById("httpToggle").classList.toggle("active",_httpEnabled)}
 function toggleAR(){_autoReconnect=!_autoReconnect;document.getElementById("arToggle").classList.toggle("active",_autoReconnect)}
+function toggleAS(){_autoStartEnabled=!_autoStartEnabled;document.getElementById("asToggle").classList.toggle("active",_autoStartEnabled)}
+
+function populateAutostartServerOptions(){
+    const sel=document.getElementById("asServer");
+    if(!sel)return;
+    const prev=sel.value;
+    const opts=["<option value=''>Use last successful server</option>"];
+    const rows=[...allServers,...wgServers];
+    rows.forEach(s=>opts.push(`<option value="${s.file}">${s.country} - ${s.city} (${s.protocol})</option>`));
+    sel.innerHTML=opts.join("");
+    if(prev)sel.value=prev;
+}
+
+async function loadAutostartSettings(){
+    try{
+        const r=await fetch("/api/autostart");
+        const d=await r.json();
+        if(!d.ok)return;
+        _autostartConfig=d.config||{};
+        _autoStartEnabled=_autostartConfig.enabled===true;
+        document.getElementById("asToggle").classList.toggle("active",_autoStartEnabled);
+        document.getElementById("asMode").value=_autostartConfig.preferred_mode||"";
+        if(document.getElementById("asServer").options.length<=1)populateAutostartServerOptions();
+        document.getElementById("asServer").value=_autostartConfig.preferred_server||"";
+        document.getElementById("failoverScope").value=_autostartConfig.failover_scope||"global";
+    }catch(e){}
+}
+
+async function saveAutostartSettings(){
+    const st=document.getElementById("autostartStatus");
+    const payload={
+        enabled:_autoStartEnabled,
+        preferred_mode:document.getElementById("asMode").value||null,
+        preferred_server:document.getElementById("asServer").value||null,
+        failover_scope:document.getElementById("failoverScope").value||"global",
+        retry_count:3,
+        retry_delay_sec:5
+    };
+    try{
+        const r=await fetch("/api/autostart",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+        const d=await r.json();
+        if(d.ok){st.textContent="Saved";st.style.color="var(--accent)";showToast("Auto-start settings saved","success")}
+        else{st.textContent=d.error||"Failed";st.style.color="var(--danger)"}
+    }catch(e){st.textContent="Failed";st.style.color="var(--danger)"}
+    setTimeout(()=>{st.textContent=""},3000);
+}
 async function saveSettings(){
     const st=document.getElementById("settingStatus");
     const p={socks_bind:document.getElementById("settingBind").value.trim(),socks_port:parseInt(document.getElementById("settingPort").value,10),http_proxy_enabled:_httpEnabled,http_proxy_bind:document.getElementById("httpBind").value.trim(),http_proxy_port:parseInt(document.getElementById("httpPort").value,10),auto_reconnect:_autoReconnect};

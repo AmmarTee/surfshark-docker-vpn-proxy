@@ -19,6 +19,9 @@ Route specific app traffic (Telegram, browsers, torrent clients) through the VPN
   - GeoIP location display when connected
   - DNS leak test
   - Connection timer and auto-reconnect with failover
+  - Boot auto-start (optional, disabled by default) using preferred or last successful server
+  - One-click Reconnect Now action (disconnect + reconnect)
+  - Live event stream for reconnect and proxy lifecycle actions
   - Browser notifications on connect/disconnect/reconnect
   - Configurable SOCKS5 and HTTP proxy settings
 
@@ -136,8 +139,11 @@ All endpoints are served from the Flask app on port 8080.
 | POST | `/api/wg/connect` | Connect WireGuard (`{"server": "...conf"}`) |
 | POST | `/api/connect/random` | Connect to a random server |
 | POST | `/api/disconnect` | Disconnect VPN and stop proxies |
+| POST | `/api/reconnect-now` | Disconnect then reconnect current/last successful target |
 | GET | `/api/logs` | Tail VPN log (mode-aware) |
+| GET | `/api/events` | Tail backend event stream (reconnect/proxy/control events) |
 | GET/POST | `/api/settings` | SOCKS5/HTTP proxy and auto-reconnect config |
+| GET/POST | `/api/autostart` | Boot auto-start configuration and last-success metadata |
 | GET | `/api/bandwidth` | Live speed and session data totals |
 | POST | `/api/ping` | Ping servers for latency (`{"servers": [...]}`) |
 | GET/POST/DELETE | `/api/favorites` | Manage favorite servers |
@@ -176,7 +182,7 @@ Set in `docker-compose.yml`:
 | `./Wireguard` | `/vpn/wireguard` | WireGuard config files (read-only) |
 | `./auth.txt` | `/vpn/auth.txt` | OpenVPN credentials (read-only) |
 | `./wireguard.txt` | `/vpn/wireguard.txt` | WireGuard keys (read-only) |
-| `./data` | `/vpn/data` | Persistent data (favorites, profiles, recent) |
+| `./data` | `/vpn/data` | Persistent data (favorites, profiles, recent, autostart, last-success) |
 
 ## Troubleshooting
 

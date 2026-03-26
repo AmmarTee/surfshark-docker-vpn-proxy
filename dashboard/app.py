@@ -27,6 +27,8 @@ WG_CONF = f"/etc/wireguard/{WG_INTERFACE}.conf"
 WG_LOG = "/var/log/wireguard.log"
 VPN_MODE_FILE = "/tmp/vpn_mode"
 DATA_DIR = "/vpn/data"
+AUTOSTART_FILE = "autostart.json"
+LAST_SUCCESS_FILE = "last_success.json"
 
 # ---------------------------------------------------------------------------
 # Runtime state (guarded by vpn_lock)
@@ -44,6 +46,10 @@ _reconnecting = False
 _reconnect_attempts = 0
 _last_server_file = None  # last connected server filename
 _last_vpn_mode = None  # "openvpn" or "wireguard"
+_last_reconnect_reason = None
+_last_reconnect_error = None
+_last_action = "idle"
+_event_log = []
 
 # Bandwidth tracking
 _bw = {
@@ -198,6 +204,141 @@ def save_json(name, data):
     path = _json_path(name)
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
+
+
+def _now_iso():
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _add_event(kind, message):
+    global _event_log
+    _event_log.append({"ts": _now_iso(), "kind": kind, "message": message})
+    _event_log = _event_log[-400:]
+
+
+def _default_autostart_config():
+    return {
+        "enabled": False,
+        "preferred_server": None,
+        "preferred_mode": None,
+        "retry_count": 3,
+        "retry_delay_sec": 5,
+        "failover_scope": "global",
+    }
+
+
+def _load_autostart_config():
+    data = load_json(AUTOSTART_FILE, {})
+    merged = _default_autostart_config()
+    if isinstance(data, dict):
+        merged.update(data)
+    return merged
+
+
+def _save_autostart_config(data):
+    cfg = _default_autostart_config()
+    cfg.update(data or {})
+    save_json(AUTOSTART_FILE, cfg)
+
+
+def _save_last_success(server_file, vpn_mode, vpn_ip=None):
+    save_json(LAST_SUCCESS_FILE, {
+        "server": server_file,
+        "vpn_mode": vpn_mode,
+        "vpn_ip": vpn_ip,
+        "timestamp": time.time(),
+    })
+
+
+def _load_last_success():
+    data = load_json(LAST_SUCCESS_FILE, {})
+    if not isinstance(data, dict):
+        return None
+    if "server" not in data or "vpn_mode" not in data:
+        return None
+    return data
+
+
+def _mode_and_server_valid(vpn_mode, server_file):
+    if vpn_mode == "wireguard":
+        return bool(server_file and WG_FILENAME_RE.match(server_file))
+    return bool(server_file and FILENAME_RE.match(server_file))
+
+
+def _attempt_connect(mode, server_file):
+    if mode == "wireguard":
+        return start_wireguard(server_file)
+    return start_vpn(server_file)
+
+
+def _pick_random_failover(mode):
+    if mode == "wireguard":
+        pool = parse_wg_files()
+    else:
+        pool = parse_ovpn_files()
+    if not pool:
+        return None
+    return random.choice(pool)["file"]
+
+
+def _run_reconnect_flow(mode, server_file, reason="monitor"):
+    global _reconnecting, _reconnect_attempts, _last_reconnect_reason, _last_reconnect_error, _last_action
+
+    cfg = _load_autostart_config()
+    retries = int(cfg.get("retry_count", 3))
+    retries = max(1, min(retries, 10))
+    retry_delay = int(cfg.get("retry_delay_sec", 5))
+    retry_delay = max(1, min(retry_delay, 60))
+    failover_scope = str(cfg.get("failover_scope", "global")).strip().lower()
+
+    _reconnecting = True
+    _reconnect_attempts = 0
+    _last_reconnect_reason = reason
+    _last_reconnect_error = None
+    _last_action = f"reconnecting:{reason}"
+    _add_event("reconnect", f"Reconnect started ({reason}) using {mode}:{server_file}")
+
+    ok = False
+    last_msg = "Reconnect failed"
+    try:
+        for attempt in range(retries):
+            _reconnect_attempts = attempt + 1
+            _add_event("reconnect", f"Attempt {_reconnect_attempts}/{retries} to {mode}:{server_file}")
+            with vpn_lock:
+                ok, last_msg = _attempt_connect(mode, server_file)
+            if ok:
+                _add_event("reconnect", f"Reconnect succeeded on attempt {_reconnect_attempts}")
+                _last_action = "connected"
+                return True, last_msg
+            _last_reconnect_error = last_msg
+            time.sleep(retry_delay)
+
+        if failover_scope == "none":
+            _add_event("reconnect", "Reconnect exhausted retries and failover is disabled")
+            _last_action = "reconnect_failed"
+            return False, last_msg
+
+        failover_mode = mode if failover_scope == "same_mode" else random.choice(["openvpn", "wireguard"])
+        failover_server = _pick_random_failover(failover_mode)
+        if not failover_server:
+            _add_event("reconnect", "Reconnect exhausted retries and no failover servers available")
+            _last_action = "reconnect_failed"
+            return False, last_msg
+
+        _add_event("reconnect", f"Failover to {failover_mode}:{failover_server}")
+        with vpn_lock:
+            ok, last_msg = _attempt_connect(failover_mode, failover_server)
+        if ok:
+            _add_event("reconnect", "Failover succeeded")
+            _last_action = "connected"
+            return True, last_msg
+        _last_reconnect_error = last_msg
+        _add_event("reconnect", f"Failover failed: {last_msg}")
+        _last_action = "reconnect_failed"
+        return False, last_msg
+    finally:
+        _reconnecting = False
+        _reconnect_attempts = 0
 
 
 # ===========================================================================
@@ -403,6 +544,9 @@ def get_vpn_status():
         "auto_reconnect": AUTO_RECONNECT,
         "reconnecting": _reconnecting,
         "reconnect_attempts": _reconnect_attempts,
+        "last_reconnect_reason": _last_reconnect_reason,
+        "last_reconnect_error": _last_reconnect_error,
+        "last_action": _last_action,
         "connected_since": connected_since,
     }
 
@@ -419,7 +563,9 @@ def read_log(lines=50):
 
 def stop_vpn():
     """Stop OpenVPN, WireGuard, tinyproxy and microsocks."""
-    global connected_since
+    global connected_since, _last_action
+    _last_action = "disconnecting"
+    _add_event("control", "Stopping VPN and proxies")
     pid = get_openvpn_pid()
     if pid:
         try:
@@ -469,6 +615,7 @@ def stop_vpn():
     stop_tinyproxy()
 
     connected_since = None
+    _last_action = "disconnected"
     _restore_dns()
     for fpath in [OPENVPN_PID, VPN_MODE_FILE]:
         try:
@@ -480,11 +627,13 @@ def stop_vpn():
 def _start_proxies():
     """Start SOCKS5 and HTTP proxies if not already running."""
     if not get_microsocks_pid():
+        _add_event("proxy", f"Starting microsocks at {SOCKS_BIND}:{SOCKS_PORT}")
         subprocess.Popen(
             ["microsocks", "-i", SOCKS_BIND, "-p", str(SOCKS_PORT)],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
     if HTTP_PROXY_ENABLED and not get_tinyproxy_pid():
+        _add_event("proxy", f"Starting tinyproxy at {HTTP_PROXY_BIND}:{HTTP_PROXY_PORT}")
         start_tinyproxy()
 
 
@@ -505,12 +654,15 @@ def _add_recent(server_file, vpn_mode, vpn_ip=None):
 
 def start_vpn(config_file):
     """Start OpenVPN with the given config file and proxies."""
-    global connected_since, _last_server_file, _last_vpn_mode
+    global connected_since, _last_server_file, _last_vpn_mode, _last_action
     config_path = os.path.join(CONFIG_DIR, config_file)
     if not os.path.exists(config_path):
         return False, f"Config file not found: {config_file}"
     if not os.path.exists(AUTH_FILE):
         return False, "Credentials file (auth.txt) not found"
+
+    _last_action = "connecting_openvpn"
+    _add_event("connect", f"OpenVPN connect requested: {config_file}")
 
     stop_vpn()
     time.sleep(1)
@@ -553,21 +705,31 @@ def start_vpn(config_file):
             _last_vpn_mode = "openvpn"
             _start_proxies()
             _add_recent(config_file, "openvpn")
+            _save_last_success(config_file, "openvpn")
+            _last_action = "connected"
+            _add_event("connect", f"OpenVPN connected: {config_file}")
             return True, "VPN connected successfully"
         # Fast-fail if openvpn process died
         if proc.poll() is not None:
+            _last_action = "connect_failed"
+            _add_event("connect", "OpenVPN process exited unexpectedly")
             return False, "OpenVPN process exited unexpectedly. Check logs."
         time.sleep(1)
 
+    _last_action = "connect_failed"
+    _add_event("connect", "OpenVPN tunnel failed to establish in time")
     return False, "VPN tunnel failed to establish within 120 seconds. Check logs."
 
 
 def start_wireguard(config_file):
     """Start WireGuard with the given config file and proxies."""
-    global connected_since, _last_server_file, _last_vpn_mode
+    global connected_since, _last_server_file, _last_vpn_mode, _last_action
     config_path = os.path.join(WG_CONFIG_DIR, config_file)
     if not os.path.exists(config_path):
         return False, f"Config file not found: {config_file}"
+
+    _last_action = "connecting_wireguard"
+    _add_event("connect", f"WireGuard connect requested: {config_file}")
 
     stop_vpn()
     time.sleep(1)
@@ -612,6 +774,8 @@ def start_wireguard(config_file):
             capture_output=True, text=True, timeout=30,
         )
     except subprocess.TimeoutExpired:
+        _last_action = "connect_failed"
+        _add_event("connect", "WireGuard timed out")
         return False, "WireGuard connection timed out"
 
     with open(WG_LOG, "a") as logf:
@@ -623,6 +787,8 @@ def start_wireguard(config_file):
         logf.write("\n")
 
     if result.returncode != 0:
+        _last_action = "connect_failed"
+        _add_event("connect", f"WireGuard failed: {result.stderr.strip()}")
         return False, f"WireGuard failed: {result.stderr.strip()}"
 
     # Manual routing
@@ -662,6 +828,9 @@ def start_wireguard(config_file):
     _last_vpn_mode = "wireguard"
     _start_proxies()
     _add_recent(config_file, "wireguard")
+    _save_last_success(config_file, "wireguard")
+    _last_action = "connected"
+    _add_event("connect", f"WireGuard connected: {config_file}")
     return True, "WireGuard connected successfully"
 
 
@@ -694,7 +863,7 @@ def read_wg_log(lines=50):
 
 def _health_monitor():
     """Check VPN interface every 10s; auto-reconnect on drop."""
-    global _reconnecting, _reconnect_attempts, connected_since
+    global connected_since
     while True:
         time.sleep(10)
         if not AUTO_RECONNECT or _reconnecting:
@@ -717,37 +886,45 @@ def _health_monitor():
         if not _last_server_file or not _last_vpn_mode:
             continue
 
-        _reconnecting = True
-        _reconnect_attempts = 0
+        _run_reconnect_flow(_last_vpn_mode, _last_server_file, reason="health_monitor")
 
-        for attempt in range(3):
-            _reconnect_attempts = attempt + 1
-            with vpn_lock:
-                if _last_vpn_mode == "wireguard":
-                    ok, _ = start_wireguard(_last_server_file)
-                else:
-                    ok, _ = start_vpn(_last_server_file)
-            if ok:
-                _reconnecting = False
-                _reconnect_attempts = 0
-                break
-            time.sleep(5)
-        else:
-            # Failover: pick a random server of same type
-            if _last_vpn_mode == "wireguard":
-                servers = parse_wg_files()
-            else:
-                servers = parse_ovpn_files()
-            if servers:
-                pick = random.choice(servers)
-                with vpn_lock:
-                    if _last_vpn_mode == "wireguard":
-                        start_wireguard(pick["file"])
-                    else:
-                        start_vpn(pick["file"])
 
-        _reconnecting = False
-        _reconnect_attempts = 0
+def _boot_autostart():
+    global _last_server_file, _last_vpn_mode, _last_action
+    time.sleep(2)
+
+    cfg = _load_autostart_config()
+    if not cfg.get("enabled"):
+        _add_event("autostart", "Autostart is disabled")
+        return
+
+    preferred_server = cfg.get("preferred_server")
+    preferred_mode = cfg.get("preferred_mode")
+    target_server = None
+    target_mode = None
+
+    if preferred_server and preferred_mode and _mode_and_server_valid(preferred_mode, preferred_server):
+        target_server = preferred_server
+        target_mode = preferred_mode
+    else:
+        last = _load_last_success()
+        if last:
+            ls_server = str(last.get("server"))
+            ls_mode = str(last.get("vpn_mode"))
+            if _mode_and_server_valid(ls_mode, ls_server):
+                target_server = ls_server
+                target_mode = ls_mode
+
+    if not target_server or not target_mode:
+        _add_event("autostart", "Autostart enabled but no valid target is available")
+        return
+
+    _last_server_file = target_server
+    _last_vpn_mode = target_mode
+    _last_action = "autostarting"
+    _add_event("autostart", f"Boot autostart target: {target_mode}:{target_server}")
+
+    _run_reconnect_flow(target_mode, target_server, reason="container_boot")
 
 
 def _bandwidth_monitor():
@@ -1026,8 +1203,10 @@ def api_settings_post():
         if HTTP_PROXY_ENABLED and get_tinyproxy_pid():
             stop_tinyproxy()
             start_tinyproxy()
+            _add_event("proxy", "Restarted tinyproxy after settings update")
         elif not HTTP_PROXY_ENABLED:
             stop_tinyproxy()
+            _add_event("proxy", "Stopped tinyproxy after settings update")
 
     return jsonify({
         "ok": True,
@@ -1038,6 +1217,105 @@ def api_settings_post():
         "http_proxy_bind": HTTP_PROXY_BIND,
         "auto_reconnect": AUTO_RECONNECT,
     })
+
+
+@app.route("/api/autostart", methods=["GET"])
+def api_autostart_get():
+    cfg = _load_autostart_config()
+    last = _load_last_success()
+    return jsonify({"ok": True, "config": cfg, "last_success": last})
+
+
+@app.route("/api/autostart", methods=["POST"])
+def api_autostart_post():
+    data = request.get_json() or {}
+    cfg = _load_autostart_config()
+
+    if "enabled" in data:
+        cfg["enabled"] = bool(data.get("enabled"))
+
+    if "preferred_mode" in data:
+        mode = data.get("preferred_mode")
+        if mode not in (None, "openvpn", "wireguard"):
+            return jsonify({"ok": False, "error": "Invalid preferred_mode"}), 400
+        cfg["preferred_mode"] = mode
+
+    if "preferred_server" in data:
+        server = data.get("preferred_server")
+        if server is not None:
+            server = str(server)
+        cfg["preferred_server"] = server
+
+    if cfg.get("preferred_server") and cfg.get("preferred_mode"):
+        if not _mode_and_server_valid(cfg.get("preferred_mode"), cfg.get("preferred_server")):
+            return jsonify({"ok": False, "error": "preferred_server does not match preferred_mode"}), 400
+
+    if "retry_count" in data:
+        try:
+            retry_count = int(data.get("retry_count"))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "Invalid retry_count"}), 400
+        if not (1 <= retry_count <= 10):
+            return jsonify({"ok": False, "error": "retry_count must be between 1 and 10"}), 400
+        cfg["retry_count"] = retry_count
+
+    if "retry_delay_sec" in data:
+        try:
+            retry_delay = int(data.get("retry_delay_sec"))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "Invalid retry_delay_sec"}), 400
+        if not (1 <= retry_delay <= 60):
+            return jsonify({"ok": False, "error": "retry_delay_sec must be between 1 and 60"}), 400
+        cfg["retry_delay_sec"] = retry_delay
+
+    if "failover_scope" in data:
+        failover_scope = str(data.get("failover_scope")).strip().lower()
+        if failover_scope not in ("global", "same_mode", "none"):
+            return jsonify({"ok": False, "error": "Invalid failover_scope"}), 400
+        cfg["failover_scope"] = failover_scope
+
+    _save_autostart_config(cfg)
+    _add_event("autostart", "Autostart preferences updated")
+    return jsonify({"ok": True, "config": cfg})
+
+
+@app.route("/api/reconnect-now", methods=["POST"])
+def api_reconnect_now():
+    global _last_server_file, _last_vpn_mode
+    data = request.get_json() or {}
+    mode = data.get("vpn_mode")
+    server = data.get("server")
+
+    if mode and mode not in ("openvpn", "wireguard"):
+        return jsonify({"ok": False, "error": "Invalid vpn_mode"}), 400
+
+    if mode and server:
+        if not _mode_and_server_valid(mode, server):
+            return jsonify({"ok": False, "error": "Invalid server for vpn_mode"}), 400
+        _last_vpn_mode = mode
+        _last_server_file = server
+
+    if not _last_server_file or not _last_vpn_mode:
+        last = _load_last_success()
+        if last:
+            _last_server_file = str(last.get("server"))
+            _last_vpn_mode = str(last.get("vpn_mode"))
+
+    if not _last_server_file or not _last_vpn_mode:
+        return jsonify({"ok": False, "error": "No reconnect target available"}), 400
+
+    _add_event("control", f"Manual reconnect requested for {_last_vpn_mode}:{_last_server_file}")
+    with vpn_lock:
+        stop_vpn()
+    ok, msg = _run_reconnect_flow(_last_vpn_mode, _last_server_file, reason="manual")
+    return jsonify({"ok": ok, "message": msg, "server": _last_server_file, "vpn_mode": _last_vpn_mode})
+
+
+@app.route("/api/events", methods=["GET"])
+def api_events():
+    lines = request.args.get("lines", 200, type=int)
+    lines = max(1, min(lines, 500))
+    return jsonify({"ok": True, "events": _event_log[-lines:]})
 
 
 @app.route("/api/bandwidth")
@@ -1283,7 +1561,13 @@ def api_dnstest():
 
 if __name__ == "__main__":
     os.makedirs(DATA_DIR, exist_ok=True)
+    _save_autostart_config(_load_autostart_config())
+    last = _load_last_success()
+    if last:
+        _last_server_file = str(last.get("server"))
+        _last_vpn_mode = str(last.get("vpn_mode"))
     threading.Thread(target=_health_monitor, daemon=True).start()
     threading.Thread(target=_bandwidth_monitor, daemon=True).start()
     threading.Thread(target=_startup_ping, daemon=True).start()
+    threading.Thread(target=_boot_autostart, daemon=True).start()
     app.run(host="0.0.0.0", port=8080)
