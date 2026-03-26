@@ -24,3 +24,7 @@ Thumbs.db
 __pycache__/
 *.pyc
 .github/copilot-instructions.md
+
+# .NET desktop build output
+desktop/SurfsharkVpn.Desktop/bin/
+desktop/SurfsharkVpn.Desktop/obj/
