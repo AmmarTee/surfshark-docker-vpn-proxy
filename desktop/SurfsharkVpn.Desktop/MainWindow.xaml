@@ -1,0 +1,50 @@
+<Window x:Class="SurfsharkVpn.Desktop.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        Title="Surfshark VPN Desktop" Height="760" Width="1200" MinWidth="980" MinHeight="620"
+        WindowStartupLocation="CenterScreen">
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="240" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <Border Grid.Column="0" Background="#10212D" Padding="16">
+            <StackPanel>
+                <TextBlock Text="Surfshark VPN" FontSize="22" FontWeight="Bold" Foreground="#E6EDF4" Margin="0,0,0,24"/>
+                <Button Content="Servers" Height="38" Margin="0,0,0,8" Command="{Binding ShowServersCommand}" />
+                <Button Content="Settings" Height="38" Margin="0,0,0,8" Command="{Binding ShowSettingsCommand}" />
+                <Button Content="Profiles" Height="38" Margin="0,0,0,8" Command="{Binding ShowProfilesCommand}" />
+                <Button Content="Logs" Height="38" Margin="0,0,0,8" Command="{Binding ShowLogsCommand}" />
+                <Separator Margin="0,16,0,16" />
+                <TextBlock Text="Status" Foreground="#8FA7BA" FontWeight="SemiBold" />
+                <TextBlock Text="{Binding ConnectionSummary}" Foreground="#E6EDF4" TextWrapping="Wrap" Margin="0,8,0,0"/>
+                <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
+                    <Button Content="Connect" Width="88" Margin="0,0,8,0" Command="{Binding ConnectCommand}" />
+                    <Button Content="Stop" Width="88" Command="{Binding DisconnectCommand}" />
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
+        <Grid Grid.Column="1" Background="#091015">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="56" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <Border Grid.Row="0" BorderBrush="#224154" BorderThickness="0,0,0,1" Padding="20,0">
+                <DockPanel VerticalAlignment="Center">
+                    <TextBlock Text="{Binding ActivePageTitle}" Foreground="#E6EDF4" FontSize="18" FontWeight="SemiBold"/>
+                    <Button Content="Reconnect Now" DockPanel.Dock="Right" Width="120" Height="30" Command="{Binding ReconnectNowCommand}" />
+                </DockPanel>
+            </Border>
+
+            <Border Grid.Row="1" Padding="20">
+                <ContentControl Content="{Binding ActivePageContent}" />
+            </Border>
+        </Grid>
+    </Grid>
+</Window>
