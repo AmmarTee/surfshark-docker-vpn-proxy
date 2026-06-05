@@ -12,11 +12,18 @@ if [ ! -f /vpn/auth.txt ]; then
     exit 1
 fi
 
+# Sanity-check the credentials file (the app also sanitizes CRLF at runtime)
+AUTH_LINES=$(grep -c . /vpn/auth.txt || true)
+if [ "$AUTH_LINES" -lt 2 ]; then
+    echo "ERROR: auth.txt must contain username on line 1 and password on line 2"
+    exit 1
+fi
+
 mkdir -p /vpn/data
 
-echo "Starting dashboard on http://0.0.0.0:8080"
-echo "SOCKS5 proxy will be available on port ${SOCKS_PORT:-1080} after connecting"
-echo "HTTP proxy will be available on port ${HTTP_PORT:-8888} after connecting"
+echo "Dashboard:    http://0.0.0.0:8000"
+echo "SOCKS5 proxy: port ${SOCKS_PORT:-1080} (after connecting)"
+echo "HTTP proxy:   port ${HTTP_PORT:-8888} (after connecting)"
 echo ""
 
 exec python3 /app/app.py

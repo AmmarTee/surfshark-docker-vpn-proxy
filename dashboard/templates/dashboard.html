@@ -1,876 +1,1045 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Surfshark VPN Dashboard</title>
-    <style>
-        :root {
-            --bg: #091015;
-            --bg2: #10212d;
-            --card: #132734;
-            --card-hover: #173243;
-            --accent: #18d0b2;
-            --accent-dim: #0ea389;
-            --danger: #f14668;
-            --warn: #f8b83d;
-            --text: #e6edf4;
-            --text-dim: #8fa7ba;
-            --border: #224154;
-            --sidebar-w: 260px;
-        }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif;
-            background: radial-gradient(1200px 600px at 85% -20%, rgba(24,208,178,0.14), transparent 60%),
-                        radial-gradient(1000px 500px at -20% 120%, rgba(38,123,255,0.12), transparent 60%),
-                        var(--bg);
-            color: var(--text);
-            height: 100vh;
-            overflow: hidden;
-        }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Surfshark VPN — Control Deck</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+    --bg: #060b10;
+    --bg-raise: #0a1219;
+    --panel: #0d1722;
+    --panel-2: #101d2b;
+    --line: #1b2d3e;
+    --line-soft: #152433;
+    --accent: #3ee6c4;
+    --accent-soft: rgba(62,230,196,0.12);
+    --accent-dim: #1fae93;
+    --amber: #f5b83d;
+    --amber-soft: rgba(245,184,61,0.12);
+    --coral: #ff5d73;
+    --coral-soft: rgba(255,93,115,0.12);
+    --ink: #e9f1f7;
+    --ink-dim: #7e95a8;
+    --ink-faint: #51687b;
+    --mono: 'IBM Plex Mono', 'Consolas', monospace;
+    --sans: 'Sora', 'Segoe UI', sans-serif;
+    --r: 12px;
+    --r-sm: 8px;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+::selection { background: var(--accent); color: var(--bg); }
 
-        /* ---- Layout ---- */
-        .app { display: flex; height: 100vh; }
+body {
+    font-family: var(--sans);
+    background:
+        radial-gradient(900px 480px at 90% -10%, rgba(62,230,196,0.07), transparent 60%),
+        radial-gradient(700px 420px at -10% 110%, rgba(64,140,255,0.06), transparent 60%),
+        var(--bg);
+    color: var(--ink);
+    height: 100vh;
+    overflow: hidden;
+    font-size: 13px;
+}
+/* faint blueprint grid over the whole app */
+body::before {
+    content: ''; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background-image:
+        linear-gradient(rgba(62,230,196,0.022) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(62,230,196,0.022) 1px, transparent 1px);
+    background-size: 44px 44px;
+    mask-image: radial-gradient(ellipse 90% 80% at 50% 20%, black 30%, transparent 100%);
+}
 
-        /* Sidebar */
-        .sidebar {
-            width: var(--sidebar-w); min-width: var(--sidebar-w);
-            background: var(--bg2); border-right: 1px solid var(--border);
-            display: flex; flex-direction: column;
-            overflow: hidden;
-        }
-        .sidebar-brand {
-            padding: 20px 20px 16px; border-bottom: 1px solid var(--border);
-        }
-        .sidebar-brand h1 { font-size: 17px; font-weight: 700; }
-        .sidebar-brand h1 span { color: var(--accent); }
-        .sidebar-brand .proxy-badges { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
-        .proxy-badge {
-            font-size: 10px; font-weight: 700; font-family: 'Consolas','Monaco',monospace;
-            padding: 3px 8px; border-radius: 4px;
-            background: var(--border); color: var(--accent);
-        }
-        .sidebar-nav { flex: 1; padding: 12px 0; overflow-y: auto; }
-        .nav-item {
-            display: flex; align-items: center; gap: 10px;
-            padding: 10px 20px; cursor: pointer; font-size: 13px; font-weight: 500;
-            color: var(--text-dim); border-left: 3px solid transparent;
-            transition: all 0.15s;
-        }
-        .nav-item:hover { color: var(--text); background: rgba(255,255,255,0.03); }
-        .nav-item.active { color: var(--accent); border-left-color: var(--accent); background: rgba(0,212,170,0.05); }
-        .nav-icon { width: 18px; text-align: center; font-size: 15px; }
-        .sidebar-status {
-            padding: 16px 20px; border-top: 1px solid var(--border);
-            font-size: 12px;
-        }
-        .status-indicator { display: flex; align-items: center; gap: 8px; }
-        .st-dot {
-            width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
-            background: var(--danger); transition: all 0.3s;
-        }
-        .st-dot.on { background: var(--accent); box-shadow: 0 0 8px rgba(0,212,170,0.5); }
-        .st-dot.warn { background: var(--warn); animation: pulse 1s infinite; }
-        @keyframes pulse { 50% { opacity: 0.4; } }
-        .st-label { color: var(--text-dim); }
-        .st-label strong { color: var(--text); font-weight: 600; }
+.app { display: flex; height: 100vh; position: relative; z-index: 1; }
 
-        /* Main */
-        .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-        .topbar {
-            display: flex; align-items: center; justify-content: space-between;
-            padding: 14px 24px; border-bottom: 1px solid var(--border);
-            background: var(--bg2); min-height: 52px;
-        }
-        .topbar-title { font-size: 15px; font-weight: 600; }
-        .topbar-actions { display: flex; gap: 8px; align-items: center; }
-        .content { flex: 1; overflow-y: auto; padding: 20px 24px; }
+/* ============ Scrollbars ============ */
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; border: 2px solid var(--bg); }
+::-webkit-scrollbar-thumb:hover { background: var(--ink-faint); }
 
-        /* Buttons */
-        .btn {
-            padding: 8px 18px; border: none; border-radius: 6px;
-            font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s;
-            white-space: nowrap;
-        }
-        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-        .btn-accent { background: var(--accent); color: var(--bg); }
-        .btn-accent:hover:not(:disabled) { background: var(--accent-dim); }
-        .btn-danger { background: var(--danger); color: #fff; }
-        .btn-danger:hover:not(:disabled) { background: #e8414f; }
-        .btn-ghost { background: var(--border); color: var(--text-dim); }
-        .btn-ghost:hover:not(:disabled) { background: #2a3a4a; color: var(--text); }
-        .btn-warn { background: var(--warn); color: #1f2830; }
-        .btn-warn:hover:not(:disabled) { background: #d69a31; }
+/* ============ Sidebar ============ */
+.sidebar {
+    width: 248px; min-width: 248px;
+    background: var(--bg-raise);
+    border-right: 1px solid var(--line-soft);
+    display: flex; flex-direction: column;
+}
+.brand { padding: 22px 20px 18px; border-bottom: 1px solid var(--line-soft); }
+.brand-row { display: flex; align-items: center; gap: 10px; }
+.brand-mark {
+    width: 32px; height: 32px; border-radius: 9px; flex-shrink: 0;
+    background: linear-gradient(135deg, var(--accent), #2bb3e0);
+    display: grid; place-items: center;
+    box-shadow: 0 0 18px rgba(62,230,196,0.35);
+}
+.brand-mark svg { width: 18px; height: 18px; }
+.brand h1 { font-size: 15px; font-weight: 700; letter-spacing: -0.02em; }
+.brand h1 small { display: block; font-size: 10px; font-weight: 500; color: var(--ink-dim); letter-spacing: 0.14em; text-transform: uppercase; margin-top: 1px; }
 
-        /* ---- Status Banner ---- */
-        .status-banner {
-            background: var(--card); border: 1px solid var(--border); border-radius: 10px;
-            padding: 16px 20px; margin-bottom: 20px;
-        }
-        .banner-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-        .banner-info { display: flex; align-items: center; gap: 12px; }
-        .banner-dot {
-            width: 10px; height: 10px; border-radius: 50%;
-            background: var(--danger); flex-shrink: 0; transition: all 0.3s;
-        }
-        .banner-dot.on { background: var(--accent); box-shadow: 0 0 10px rgba(0,212,170,0.4); }
-        .banner-dot.warn { background: var(--warn); animation: pulse 1s infinite; }
-        .banner-title { font-size: 14px; font-weight: 600; }
-        .banner-sub { font-size: 12px; color: var(--text-dim); }
-        .banner-stats {
-            display: flex; gap: 20px; margin-top: 12px; padding-top: 12px;
-            border-top: 1px solid var(--border); flex-wrap: wrap;
-        }
-        .b-stat { display: flex; flex-direction: column; gap: 1px; }
-        .b-stat .l { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
-        .b-stat .v { font-size: 13px; font-weight: 600; font-family: monospace; }
+.nav { padding: 14px 12px; display: flex; flex-direction: column; gap: 2px; }
+.nav-label { font-size: 9.5px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-faint); padding: 10px 10px 6px; }
+.nav-item {
+    display: flex; align-items: center; gap: 11px;
+    padding: 9px 12px; border-radius: var(--r-sm);
+    font-size: 13px; font-weight: 500; color: var(--ink-dim);
+    cursor: pointer; transition: all .15s; border: 1px solid transparent;
+}
+.nav-item svg { width: 16px; height: 16px; flex-shrink: 0; opacity: .8; }
+.nav-item:hover { color: var(--ink); background: rgba(255,255,255,0.03); }
+.nav-item.active { color: var(--accent); background: var(--accent-soft); border-color: rgba(62,230,196,0.18); }
 
-        /* ---- Filters ---- */
-        .filters-bar {
-            display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center;
-        }
-        .seg-group {
-            display: flex; border-radius: 6px; overflow: hidden;
-            border: 1px solid var(--border);
-        }
-        .seg-btn {
-            padding: 7px 14px; border: none; background: transparent;
-            color: var(--text-dim); font-size: 12px; font-weight: 600;
-            cursor: pointer; transition: all 0.15s;
-        }
-        .seg-btn.active { background: var(--accent); color: var(--bg); }
-        .seg-btn:not(.active):hover { background: rgba(255,255,255,0.04); }
-        .filter-input {
-            flex: 1; min-width: 160px; padding: 7px 12px;
-            background: var(--card); border: 1px solid var(--border); border-radius: 6px;
-            color: var(--text); font-size: 12px; outline: none;
-        }
-        .filter-input:focus { border-color: var(--accent); }
-        .filter-select {
-            padding: 7px 10px; background: var(--card); border: 1px solid var(--border);
-            border-radius: 6px; color: var(--text); font-size: 12px; outline: none; cursor: pointer;
-        }
-        .filter-select option { background: var(--card); }
+.side-proxies { margin: auto 12px 0; padding: 14px; background: var(--panel); border: 1px solid var(--line-soft); border-radius: var(--r); }
+.side-proxies h4 { font-size: 9.5px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-faint); margin-bottom: 10px; }
+.endpoint { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 0; }
+.endpoint .lbl { font-size: 11px; color: var(--ink-dim); }
+.endpoint .val { font-family: var(--mono); font-size: 11.5px; color: var(--ink); display: flex; align-items: center; gap: 6px; }
+.copy-btn {
+    background: none; border: none; cursor: pointer; color: var(--ink-faint);
+    padding: 2px; border-radius: 4px; display: grid; place-items: center; transition: color .15s;
+}
+.copy-btn:hover { color: var(--accent); }
+.copy-btn svg { width: 12px; height: 12px; }
 
-        /* ---- Server List (table rows, not cards) ---- */
-        .server-list { display: flex; flex-direction: column; gap: 4px; }
-        .srv {
-            display: grid;
-            grid-template-columns: 36px 1fr 70px 60px 50px 28px;
-            align-items: center; gap: 8px;
-            padding: 10px 14px;
-            background: var(--card); border: 1px solid var(--border);
-            border-radius: 8px; cursor: pointer; transition: all 0.15s;
-            overflow: hidden;
-        }
-        .srv:hover { background: var(--card-hover); border-color: #2a4a5a; }
-        .srv.active { border-color: var(--accent); background: rgba(0,212,170,0.06); }
-        .srv-flag { font-size: 20px; text-align: center; line-height: 1; }
-        .srv-info { overflow: hidden; }
-        .srv-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .srv-city { font-size: 11px; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 6px; }
-        .srv-ping { font-size: 11px; text-align: right; display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
-        .srv-proto {
-            font-size: 10px; font-weight: 700; text-align: center;
-            padding: 2px 6px; border-radius: 3px;
-            background: var(--bg); color: var(--text-dim);
-        }
-        .srv-badge {
-            font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 3px;
-            text-align: center; text-transform: uppercase;
-        }
-        .srv-badge.recent { background: rgba(255,165,2,0.12); color: var(--warn); }
-        .srv-badge.live { background: var(--accent); color: var(--bg); }
-        .srv-fav {
-            font-size: 14px; background: none; border: none; cursor: pointer;
-            color: var(--text-dim); transition: all 0.15s; text-align: center;
-        }
-        .srv-fav:hover { transform: scale(1.2); color: var(--warn); }
-        .ping-dot {
-            width: 6px; height: 6px; border-radius: 50%; display: inline-block;
-        }
-        .ping-dot.good { background: var(--accent); }
-        .ping-dot.med { background: var(--warn); }
-        .ping-dot.bad { background: var(--danger); }
-        .no-results { text-align: center; padding: 40px; color: var(--text-dim); font-size: 13px; }
+.side-status { padding: 16px 20px 18px; margin-top: 12px; border-top: 1px solid var(--line-soft); }
+.pulse-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--coral); flex-shrink: 0; transition: background .3s; }
+.pulse-dot.on { background: var(--accent); box-shadow: 0 0 10px rgba(62,230,196,0.6); }
+.pulse-dot.busy { background: var(--amber); animation: blink 1s ease infinite; }
+@keyframes blink { 50% { opacity: .35; } }
+.side-status-row { display: flex; align-items: center; gap: 9px; font-size: 12px; font-weight: 600; }
+.side-status-meta { margin-top: 7px; font-family: var(--mono); font-size: 10.5px; color: var(--ink-dim); line-height: 1.7; word-break: break-all; }
 
-        /* ---- Live Log Panel ---- */
-        .log-panel {
-            position: fixed; right: 0; top: 0; width: 420px; height: 100vh;
-            background: var(--bg2); border-left: 1px solid var(--border);
-            display: flex; flex-direction: column;
-            transform: translateX(100%); transition: transform 0.25s ease;
-            z-index: 50;
-        }
-        .log-panel.open { transform: translateX(0); }
-        .log-panel-hdr {
-            display: flex; align-items: center; justify-content: space-between;
-            padding: 14px 16px; border-bottom: 1px solid var(--border);
-        }
-        .log-panel-hdr span { font-size: 13px; font-weight: 600; }
-        .log-panel-close {
-            background: none; border: none; color: var(--text-dim); font-size: 18px;
-            cursor: pointer; padding: 2px 6px; border-radius: 4px;
-        }
-        .log-panel-close:hover { background: var(--border); color: var(--text); }
-        .log-panel-body {
-            flex: 1; overflow-y: auto; padding: 12px 16px;
-            font-family: 'Consolas','Monaco',monospace; font-size: 11px;
-            line-height: 1.6; color: var(--text-dim);
-            white-space: pre-wrap; word-break: break-all;
-        }
+/* ============ Main column ============ */
+.main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 26px; min-height: 60px;
+    border-bottom: 1px solid var(--line-soft);
+    background: rgba(10,18,25,0.7); backdrop-filter: blur(8px);
+}
+.topbar h2 { font-size: 16px; font-weight: 700; letter-spacing: -0.02em; }
+.topbar-actions { display: flex; gap: 8px; }
 
-        /* ---- Settings ---- */
-        .settings-grid { display: flex; flex-direction: column; gap: 16px; }
-        .s-card {
-            background: var(--card); border: 1px solid var(--border);
-            border-radius: 10px; padding: 20px;
-        }
-        .s-card h3 { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
-        .s-card .desc { font-size: 12px; color: var(--text-dim); margin-bottom: 16px; line-height: 1.5; }
-        .s-row { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
-        .s-row label { font-size: 12px; font-weight: 600; }
-        .s-input {
-            padding: 8px 12px; background: var(--bg); border: 1px solid var(--border);
-            border-radius: 6px; color: var(--text); font-size: 13px;
-            font-family: 'Consolas',monospace; outline: none; max-width: 260px;
-        }
-        .s-input:focus { border-color: var(--accent); }
-        .s-hint { font-size: 11px; color: var(--text-dim); }
-        .toggle-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
-        .toggle {
-            position: relative; width: 38px; height: 20px;
-            background: var(--border); border-radius: 10px;
-            cursor: pointer; transition: background 0.2s;
-        }
-        .toggle.active { background: var(--accent); }
-        .toggle::after {
-            content: ''; position: absolute; top: 2px; left: 2px;
-            width: 16px; height: 16px; background: #fff; border-radius: 50%;
-            transition: transform 0.2s;
-        }
-        .toggle.active::after { transform: translateX(18px); }
-        .s-actions { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
-        .s-status { font-size: 12px; font-weight: 500; }
-        .cfg-item {
-            display: flex; justify-content: space-between; align-items: center;
-            padding: 8px 14px; background: var(--bg); border-radius: 6px; max-width: 340px; margin-bottom: 4px;
-        }
-        .cfg-item span { font-size: 12px; color: var(--text-dim); }
-        .cfg-item strong { font-size: 13px; font-family: 'Consolas',monospace; }
-        .dns-result { padding: 10px 14px; border-radius: 6px; font-size: 12px; margin-top: 10px; }
-        .dns-result.secure { background: rgba(0,212,170,0.1); color: var(--accent); }
-        .dns-result.leak { background: rgba(255,71,87,0.1); color: var(--danger); }
-        .dns-result.unknown { background: rgba(136,153,170,0.1); color: var(--text-dim); }
+.content { flex: 1; overflow-y: auto; padding: 22px 26px 40px; }
 
-        /* ---- Profiles ---- */
-        .profiles-grid {
-            display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-            gap: 10px; margin-top: 14px;
-        }
-        .p-card {
-            background: var(--bg); border: 1px solid var(--border);
-            border-radius: 8px; padding: 14px; transition: all 0.15s;
-        }
-        .p-card:hover { border-color: var(--accent-dim); }
-        .p-name { font-size: 14px; font-weight: 600; margin-bottom: 3px; }
-        .p-detail { font-size: 11px; color: var(--text-dim); }
-        .p-actions { display: flex; gap: 6px; margin-top: 10px; }
+/* ============ Buttons ============ */
+.btn {
+    font-family: var(--sans);
+    padding: 8px 16px; border: 1px solid transparent; border-radius: var(--r-sm);
+    font-size: 12px; font-weight: 600; cursor: pointer; transition: all .15s;
+    white-space: nowrap; display: inline-flex; align-items: center; gap: 7px;
+}
+.btn svg { width: 13px; height: 13px; }
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+.btn-accent { background: var(--accent); color: #04261e; }
+.btn-accent:hover:not(:disabled) { background: #5cf0d2; box-shadow: 0 0 16px rgba(62,230,196,0.35); }
+.btn-outline { background: transparent; color: var(--ink-dim); border-color: var(--line); }
+.btn-outline:hover:not(:disabled) { color: var(--ink); border-color: var(--ink-faint); }
+.btn-danger { background: var(--coral-soft); color: var(--coral); border-color: rgba(255,93,115,0.3); }
+.btn-danger:hover:not(:disabled) { background: rgba(255,93,115,0.22); }
+.btn-warn { background: var(--amber-soft); color: var(--amber); border-color: rgba(245,184,61,0.3); }
+.btn-warn:hover:not(:disabled) { background: rgba(245,184,61,0.22); }
 
-        /* ---- Logs page ---- */
-        .log-container {
-            background: var(--card); border: 1px solid var(--border);
-            border-radius: 10px; overflow: hidden;
-        }
-        .log-hdr {
-            display: flex; justify-content: space-between; align-items: center;
-            padding: 10px 16px; border-bottom: 1px solid var(--border);
-        }
-        .log-hdr span { font-size: 13px; font-weight: 600; }
-        .log-body {
-            padding: 14px; max-height: 600px; overflow-y: auto;
-            font-family: 'Consolas','Monaco',monospace; font-size: 11px;
-            line-height: 1.7; color: var(--text-dim);
-            white-space: pre-wrap; word-break: break-all;
-        }
+/* ============ Hero connection card ============ */
+.hero {
+    position: relative; overflow: hidden;
+    background: linear-gradient(160deg, var(--panel-2), var(--panel));
+    border: 1px solid var(--line); border-radius: 16px;
+    padding: 24px 26px; margin-bottom: 22px;
+}
+.hero::after {
+    content: ''; position: absolute; top: -120px; right: -80px; width: 380px; height: 380px;
+    background: radial-gradient(circle, rgba(62,230,196,0.08), transparent 65%);
+    pointer-events: none; transition: opacity .5s; opacity: 0;
+}
+.hero.connected::after { opacity: 1; }
+.hero-grid { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
 
-        /* ---- Overlay ---- */
-        .overlay {
-            display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(11,17,23,0.88); z-index: 100;
-            flex-direction: column; align-items: center; justify-content: center; gap: 12px;
-        }
-        .overlay.visible { display: flex; }
-        .spinner { width: 40px; height: 40px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        .overlay-text { font-size: 14px; font-weight: 500; }
-        .overlay-log {
-            width: 520px; max-height: 260px; margin-top: 8px;
-            background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
-            padding: 12px; overflow-y: auto;
-            font-family: 'Consolas',monospace; font-size: 11px; line-height: 1.6;
-            color: var(--text-dim); white-space: pre-wrap; word-break: break-all;
-        }
+.ring { position: relative; width: 84px; height: 84px; flex-shrink: 0; }
+.ring-track { position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--line); }
+.ring-arc {
+    position: absolute; inset: 0; border-radius: 50%; opacity: 0; transition: opacity .3s;
+    background: conic-gradient(from 0deg, transparent 10%, var(--amber) 50%, transparent 90%);
+    -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), black calc(100% - 2px));
+            mask: radial-gradient(farthest-side, transparent calc(100% - 3px), black calc(100% - 2px));
+    animation: spin 1.2s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.hero.busy .ring-arc { opacity: 1; }
+.hero.connected .ring-track { border-color: rgba(62,230,196,0.5); box-shadow: 0 0 24px rgba(62,230,196,0.25), inset 0 0 18px rgba(62,230,196,0.12); }
+.ring-core { position: absolute; inset: 0; display: grid; place-items: center; font-size: 30px; }
+.ring-core .off-icon { color: var(--ink-faint); font-size: 22px; }
 
-        /* Toast */
-        .toast {
-            position: fixed; bottom: 20px; right: 20px;
-            padding: 10px 20px; border-radius: 8px;
-            font-size: 13px; font-weight: 500; z-index: 200;
-            transform: translateY(60px); opacity: 0; transition: all 0.25s;
-        }
-        .toast.visible { transform: translateY(0); opacity: 1; }
-        .toast.success { background: var(--accent); color: var(--bg); }
-        .toast.error { background: var(--danger); color: #fff; }
+.hero-head { flex: 1; min-width: 240px; }
+.hero-state { font-size: 10.5px; font-weight: 700; letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-faint); display: flex; align-items: center; gap: 8px; }
+.hero-state .pulse-dot { width: 7px; height: 7px; }
+.hero-title { font-size: 24px; font-weight: 800; letter-spacing: -0.03em; margin-top: 5px; line-height: 1.15; }
+.hero-sub { font-size: 12.5px; color: var(--ink-dim); margin-top: 5px; }
+.hero-sub.err { color: var(--coral); }
 
-        @media (max-width: 1100px) {
-            .log-panel { width: 100%; }
-        }
-    </style>
+.hero-stats {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+    gap: 1px; background: var(--line-soft);
+    border: 1px solid var(--line-soft); border-radius: var(--r);
+    overflow: hidden; margin-top: 20px;
+}
+.stat { background: var(--panel); padding: 11px 14px; }
+.stat .k { font-size: 9.5px; font-weight: 700; letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-faint); }
+.stat .v { font-family: var(--mono); font-size: 13px; font-weight: 500; margin-top: 4px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat .v .dim { color: var(--ink-dim); }
+
+/* connecting ticker */
+.op-ticker {
+    margin-top: 16px; padding: 10px 14px;
+    background: rgba(0,0,0,0.28); border: 1px solid var(--line-soft); border-radius: var(--r-sm);
+    font-family: var(--mono); font-size: 10.5px; line-height: 1.7; color: var(--ink-dim);
+    max-height: 76px; overflow: hidden; display: none;
+    white-space: pre-wrap; word-break: break-all;
+}
+.hero.busy .op-ticker { display: block; }
+
+/* ============ Filter bar ============ */
+.toolbar {
+    position: sticky; top: -23px; z-index: 5;
+    display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+    padding: 12px 0; margin: -12px 0 12px;
+    background: linear-gradient(var(--bg) 82%, transparent);
+}
+.seg { display: flex; border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; background: var(--panel); }
+.seg button {
+    font-family: var(--sans); padding: 7px 14px; border: none; background: transparent;
+    color: var(--ink-dim); font-size: 12px; font-weight: 600; cursor: pointer; transition: all .15s;
+}
+.seg button.active { background: var(--accent); color: #04261e; }
+.seg button:not(.active):hover { color: var(--ink); }
+.input, select.input {
+    font-family: var(--sans);
+    padding: 7px 12px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--r-sm); color: var(--ink); font-size: 12px; outline: none;
+    transition: border-color .15s;
+}
+.input:focus { border-color: var(--accent-dim); }
+.input.grow { flex: 1; min-width: 150px; }
+select.input { cursor: pointer; }
+select.input option { background: var(--panel); }
+.count-chip { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); margin-left: auto; }
+
+/* ============ Server list ============ */
+.country-head {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 10.5px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--ink-faint); padding: 16px 4px 7px;
+}
+.country-head::after { content: ''; flex: 1; height: 1px; background: var(--line-soft); }
+.srv-rows { display: flex; flex-direction: column; gap: 5px; }
+.srv {
+    display: grid; grid-template-columns: 34px 1fr 92px 52px 30px;
+    align-items: center; gap: 10px;
+    padding: 10px 14px;
+    background: var(--panel); border: 1px solid var(--line-soft);
+    border-radius: 10px; cursor: pointer; transition: all .14s;
+}
+.srv:hover { border-color: var(--ink-faint); background: var(--panel-2); transform: translateX(2px); }
+.srv.active { border-color: rgba(62,230,196,0.55); background: var(--accent-soft); }
+.srv-flag { font-size: 19px; line-height: 1; text-align: center; }
+.srv-name { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.srv-name .city { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srv-name .cc { font-family: var(--mono); font-size: 10px; color: var(--ink-faint); font-weight: 500; }
+.tag { font-size: 8.5px; font-weight: 700; letter-spacing: .08em; padding: 2px 6px; border-radius: 4px; text-transform: uppercase; flex-shrink: 0; }
+.tag.live { background: var(--accent); color: #04261e; }
+.tag.recent { background: var(--amber-soft); color: var(--amber); }
+.srv-ping { font-family: var(--mono); font-size: 11px; text-align: right; color: var(--ink-dim); display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.ping-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.ping-dot.good { background: var(--accent); }
+.ping-dot.med { background: var(--amber); }
+.ping-dot.bad { background: var(--coral); }
+.srv-proto { font-family: var(--mono); font-size: 10px; font-weight: 600; text-align: center; padding: 3px 0; border-radius: 5px; background: var(--bg); color: var(--ink-dim); border: 1px solid var(--line-soft); }
+.srv-fav { font-size: 15px; background: none; border: none; cursor: pointer; color: var(--ink-faint); transition: all .15s; }
+.srv-fav:hover { transform: scale(1.25); color: var(--amber); }
+.srv-fav.faved { color: var(--amber); }
+.empty { text-align: center; padding: 48px; color: var(--ink-faint); font-size: 13px; }
+
+/* ============ Cards (settings etc) ============ */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 14px; align-items: start; }
+.card { background: var(--panel); border: 1px solid var(--line-soft); border-radius: var(--r); padding: 20px; }
+.card.wide { grid-column: 1 / -1; }
+.card h3 { font-size: 13.5px; font-weight: 700; letter-spacing: -0.01em; display: flex; align-items: center; gap: 8px; }
+.card h3 svg { width: 15px; height: 15px; color: var(--accent); }
+.card .desc { font-size: 11.5px; color: var(--ink-dim); margin: 5px 0 16px; line-height: 1.55; }
+.frow { display: flex; flex-direction: column; gap: 5px; margin-bottom: 13px; }
+.frow label { font-size: 11px; font-weight: 600; color: var(--ink-dim); }
+.frow .input { max-width: 100%; font-family: var(--mono); }
+.hint { font-size: 10.5px; color: var(--ink-faint); }
+.toggle-row { display: flex; align-items: center; gap: 10px; padding: 5px 0 13px; font-size: 12.5px; }
+.toggle { position: relative; width: 36px; height: 19px; background: var(--line); border-radius: 10px; cursor: pointer; transition: background .2s; flex-shrink: 0; }
+.toggle.active { background: var(--accent); }
+.toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; background: #fff; border-radius: 50%; transition: transform .2s; }
+.toggle.active::after { transform: translateX(17px); }
+.actions { display: flex; align-items: center; gap: 10px; }
+.inline-status { font-size: 11.5px; font-weight: 600; }
+.kv { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: var(--bg-raise); border-radius: var(--r-sm); margin-bottom: 5px; }
+.kv span { font-size: 11.5px; color: var(--ink-dim); }
+.kv strong { font-family: var(--mono); font-size: 12px; font-weight: 500; }
+.dns-result { padding: 10px 14px; border-radius: var(--r-sm); font-size: 12px; margin-top: 12px; font-family: var(--mono); line-height: 1.5; }
+.dns-result.secure { background: var(--accent-soft); color: var(--accent); }
+.dns-result.leak { background: var(--coral-soft); color: var(--coral); }
+.dns-result.unknown { background: rgba(126,149,168,0.1); color: var(--ink-dim); }
+
+/* ============ Profiles ============ */
+.profiles-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; margin-top: 14px; }
+.p-card { background: var(--bg-raise); border: 1px solid var(--line-soft); border-radius: 10px; padding: 15px; transition: border-color .15s; }
+.p-card:hover { border-color: var(--accent-dim); }
+.p-name { font-size: 13.5px; font-weight: 700; }
+.p-detail { font-family: var(--mono); font-size: 10.5px; color: var(--ink-dim); margin-top: 4px; word-break: break-all; line-height: 1.6; }
+.p-actions { display: flex; gap: 6px; margin-top: 12px; }
+
+/* ============ Logs ============ */
+.log-shell { background: var(--panel); border: 1px solid var(--line-soft); border-radius: var(--r); overflow: hidden; }
+.log-head { display: flex; justify-content: space-between; align-items: center; padding: 11px 16px; border-bottom: 1px solid var(--line-soft); }
+.log-head span { font-size: 12.5px; font-weight: 700; }
+.log-body { padding: 16px; max-height: calc(100vh - 320px); overflow-y: auto; font-family: var(--mono); font-size: 11px; line-height: 1.75; color: var(--ink-dim); white-space: pre-wrap; word-break: break-all; }
+
+/* ============ Live log slide panel ============ */
+.live-panel {
+    position: fixed; right: 0; top: 0; width: 440px; height: 100vh; z-index: 60;
+    background: var(--bg-raise); border-left: 1px solid var(--line);
+    display: flex; flex-direction: column;
+    transform: translateX(102%); transition: transform .28s cubic-bezier(.4,0,.2,1);
+    box-shadow: -24px 0 48px rgba(0,0,0,0.4);
+}
+.live-panel.open { transform: translateX(0); }
+.live-panel-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px; border-bottom: 1px solid var(--line-soft); }
+.live-panel-head span { font-size: 13px; font-weight: 700; }
+.x-btn { background: none; border: none; color: var(--ink-dim); font-size: 19px; cursor: pointer; padding: 2px 8px; border-radius: 6px; }
+.x-btn:hover { background: var(--line-soft); color: var(--ink); }
+.live-panel-body { flex: 1; overflow-y: auto; padding: 14px 18px; font-family: var(--mono); font-size: 10.5px; line-height: 1.7; color: var(--ink-dim); white-space: pre-wrap; word-break: break-all; }
+
+/* ============ Toast ============ */
+.toast {
+    position: fixed; bottom: 22px; right: 22px; z-index: 200;
+    padding: 11px 18px; border-radius: 10px; font-size: 12.5px; font-weight: 600;
+    border: 1px solid transparent;
+    transform: translateY(70px); opacity: 0; transition: all .28s cubic-bezier(.4,0,.2,1);
+    max-width: 420px;
+}
+.toast.visible { transform: translateY(0); opacity: 1; }
+.toast.success { background: #0b2e26; color: var(--accent); border-color: rgba(62,230,196,0.35); }
+.toast.error { background: #33141b; color: var(--coral); border-color: rgba(255,93,115,0.35); }
+
+/* page reveal */
+.page { animation: rise .3s ease both; }
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+@media (max-width: 1080px) {
+    .sidebar { width: 200px; min-width: 200px; }
+    .live-panel { width: 100%; }
+    .srv { grid-template-columns: 30px 1fr 70px 44px 26px; }
+}
+</style>
 </head>
 <body>
 <div class="app">
-    <!-- Sidebar -->
-    <div class="sidebar">
-        <div class="sidebar-brand">
-            <h1><span>Surfshark</span> VPN</h1>
-            <div class="proxy-badges">
-                <span class="proxy-badge" id="badgeSocks">SOCKS5 :1080</span>
-                <span class="proxy-badge" id="badgeHttp">HTTP :8888</span>
-            </div>
-        </div>
-        <div class="sidebar-nav">
-            <div class="nav-item active" onclick="navTo('servers',this)"><span class="nav-icon">&#9778;</span>Servers</div>
-            <div class="nav-item" onclick="navTo('settings',this)"><span class="nav-icon">&#9881;</span>Settings</div>
-            <div class="nav-item" onclick="navTo('profiles',this)"><span class="nav-icon">&#9733;</span>Profiles</div>
-            <div class="nav-item" onclick="navTo('logs',this)"><span class="nav-icon">&#9776;</span>Logs</div>
-        </div>
-        <div class="sidebar-status">
-            <div class="status-indicator">
-                <div class="st-dot" id="sidebarDot"></div>
-                <div class="st-label" id="sidebarLabel">Disconnected</div>
-            </div>
-            <div id="sidebarMeta" style="margin-top:6px;font-size:11px;color:var(--text-dim);display:none">
-                <div id="sidebarServer"></div>
-                <div id="sidebarIp"></div>
-                <div id="sidebarDuration"></div>
-            </div>
-        </div>
-    </div>
 
-    <!-- Main -->
+    <!-- ======== Sidebar ======== -->
+    <aside class="sidebar">
+        <div class="brand">
+            <div class="brand-row">
+                <div class="brand-mark">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="#04261e" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                </div>
+                <h1>Control Deck<small>Surfshark VPN</small></h1>
+            </div>
+        </div>
+
+        <nav class="nav">
+            <div class="nav-label">Navigate</div>
+            <div class="nav-item active" data-page="servers" onclick="navTo('servers',this)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                Servers
+            </div>
+            <div class="nav-item" data-page="settings" onclick="navTo('settings',this)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                Settings
+            </div>
+            <div class="nav-item" data-page="profiles" onclick="navTo('profiles',this)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+                Profiles
+            </div>
+            <div class="nav-item" data-page="logs" onclick="navTo('logs',this)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+                Logs
+            </div>
+        </nav>
+
+        <div class="side-proxies">
+            <h4>Proxy Endpoints</h4>
+            <div class="endpoint">
+                <span class="lbl">SOCKS5</span>
+                <span class="val"><span id="epSocks">:1080</span>
+                    <button class="copy-btn" onclick="copyEndpoint('socks')" title="Copy">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                    </button>
+                </span>
+            </div>
+            <div class="endpoint" id="epHttpRow">
+                <span class="lbl">HTTP</span>
+                <span class="val"><span id="epHttp">:8888</span>
+                    <button class="copy-btn" onclick="copyEndpoint('http')" title="Copy">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                    </button>
+                </span>
+            </div>
+        </div>
+
+        <div class="side-status">
+            <div class="side-status-row"><div class="pulse-dot" id="sideDot"></div><span id="sideLabel">Offline</span></div>
+            <div class="side-status-meta" id="sideMeta" style="display:none">
+                <div id="sideServer"></div>
+                <div id="sideIp"></div>
+                <div id="sideUptime"></div>
+            </div>
+        </div>
+    </aside>
+
+    <!-- ======== Main ======== -->
     <div class="main">
         <div class="topbar">
-            <div class="topbar-title" id="topbarTitle">Servers</div>
+            <h2 id="pageTitle">Servers</h2>
             <div class="topbar-actions">
-                <button class="btn btn-ghost" onclick="toggleLogPanel()">Live Log</button>
-                <button class="btn btn-ghost" id="btnRandom" onclick="connectRandom()">Random</button>
-                <button class="btn btn-warn" id="btnReconnect" style="display:none" onclick="reconnectNow()">Reconnect Now</button>
-                <button class="btn btn-danger" id="btnDisconnect" style="display:none" onclick="disconnect()">Stop Connection</button>
+                <button class="btn btn-outline" onclick="toggleLivePanel()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                    Live Log
+                </button>
+                <button class="btn btn-outline" id="btnRandom" onclick="connectRandom()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
+                    Random
+                </button>
+                <button class="btn btn-warn" id="btnReconnect" style="display:none" onclick="reconnectNow()">Reconnect</button>
+                <button class="btn btn-danger" id="btnDisconnect" style="display:none" onclick="disconnect()">Disconnect</button>
             </div>
         </div>
+
         <div class="content">
-            <!-- Status Banner -->
-            <div class="status-banner" id="statusBanner">
-                <div class="banner-top">
-                    <div class="banner-info">
-                        <div class="banner-dot" id="bannerDot"></div>
-                        <div>
-                            <div class="banner-title" id="bannerTitle">Disconnected</div>
-                            <div class="banner-sub" id="bannerSub">Select a server to connect</div>
-                        </div>
+            <!-- Hero connection card -->
+            <div class="hero" id="hero">
+                <div class="hero-grid">
+                    <div class="ring">
+                        <div class="ring-track"></div>
+                        <div class="ring-arc"></div>
+                        <div class="ring-core" id="ringCore"><span class="off-icon">●</span></div>
+                    </div>
+                    <div class="hero-head">
+                        <div class="hero-state"><div class="pulse-dot" id="heroDot"></div><span id="heroState">Offline</span></div>
+                        <div class="hero-title" id="heroTitle">Not connected</div>
+                        <div class="hero-sub" id="heroSub">Pick a server below to bring the tunnel up.</div>
                     </div>
                 </div>
-                <div class="banner-stats" id="bannerStats" style="display:none">
-                    <div class="b-stat"><span class="l">Mode</span><span class="v" id="bMode">-</span></div>
-                    <div class="b-stat"><span class="l">Server</span><span class="v" id="bServer">-</span></div>
-                    <div class="b-stat"><span class="l">IP</span><span class="v" id="bIp">-</span></div>
-                    <div class="b-stat"><span class="l">Location</span><span class="v" id="bGeo">-</span></div>
-                    <div class="b-stat"><span class="l">Uptime</span><span class="v" id="bDur">-</span></div>
-                    <div class="b-stat"><span class="l">Speed</span><span class="v" id="bSpeed">-</span></div>
-                    <div class="b-stat"><span class="l">Data</span><span class="v" id="bData">-</span></div>
+                <div class="hero-stats" id="heroStats" style="display:none">
+                    <div class="stat"><div class="k">Mode</div><div class="v" id="stMode">—</div></div>
+                    <div class="stat"><div class="k">Exit IP</div><div class="v" id="stIp">—</div></div>
+                    <div class="stat"><div class="k">Location</div><div class="v" id="stGeo">—</div></div>
+                    <div class="stat"><div class="k">Uptime</div><div class="v" id="stUptime">—</div></div>
+                    <div class="stat"><div class="k">Throughput</div><div class="v" id="stSpeed">—</div></div>
+                    <div class="stat"><div class="k">Session Data</div><div class="v" id="stData">—</div></div>
                 </div>
+                <div class="op-ticker" id="opTicker"></div>
             </div>
 
-            <!-- Page: Servers -->
-            <div class="page active" id="page-servers">
-                <div class="filters-bar">
-                    <div class="seg-group">
-                        <button class="seg-btn active" onclick="setVpnType('openvpn',this)">OpenVPN</button>
-                        <button class="seg-btn" onclick="setVpnType('wireguard',this)">WireGuard</button>
+            <!-- ===== Page: Servers ===== -->
+            <div class="page" id="page-servers">
+                <div class="toolbar">
+                    <div class="seg">
+                        <button class="active" onclick="setVpnType('openvpn',this)">OpenVPN</button>
+                        <button onclick="setVpnType('wireguard',this)">WireGuard</button>
                     </div>
-                    <input type="text" class="filter-input" id="searchBox" placeholder="Search..." oninput="renderServers()">
-                    <div class="seg-group" id="protoToggle">
-                        <button class="seg-btn active" onclick="setProto('UDP',this)">UDP</button>
-                        <button class="seg-btn" onclick="setProto('TCP',this)">TCP</button>
+                    <div class="seg" id="protoSeg">
+                        <button class="active" onclick="setProto('UDP',this)">UDP</button>
+                        <button onclick="setProto('TCP',this)">TCP</button>
                     </div>
-                    <select class="filter-select" id="sortSel" onchange="renderServers()">
-                        <option value="name">Name</option>
-                        <option value="country">Country</option>
-                        <option value="latency">Latency</option>
-                        <option value="recent">Recent</option>
+                    <input type="text" class="input grow" id="searchBox" placeholder="Search country or city…" oninput="renderServers()">
+                    <select class="input" id="sortSel" onchange="renderServers()">
+                        <option value="name">Sort: Country</option>
+                        <option value="latency">Sort: Latency</option>
+                        <option value="recent">Sort: Recent</option>
+                        <option value="favorites">Sort: Favorites</option>
                     </select>
-                    <button class="btn btn-ghost" onclick="pingVisible()">Ping</button>
+                    <button class="btn btn-outline" onclick="pingVisible()">Ping visible</button>
+                    <span class="count-chip" id="countChip"></span>
                 </div>
-                <div class="server-list" id="serverList"></div>
+                <div id="serverList"></div>
             </div>
 
-            <!-- Page: Settings -->
+            <!-- ===== Page: Settings ===== -->
             <div class="page" id="page-settings" style="display:none">
-                <div class="settings-grid">
-                    <div class="s-card">
-                        <h3>SOCKS5 Proxy</h3>
-                        <p class="desc">Configure the SOCKS5 proxy address.</p>
-                        <div class="s-row"><label>Bind IP</label><input type="text" id="settingBind" class="s-input" value="0.0.0.0"><span class="s-hint">0.0.0.0 = all interfaces</span></div>
-                        <div class="s-row"><label>Port</label><input type="number" id="settingPort" class="s-input" value="1080" min="1024" max="65535"></div>
+                <div class="cards">
+                    <div class="card">
+                        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>SOCKS5 Proxy</h3>
+                        <p class="desc">Exposes the tunnel as a SOCKS5 proxy.</p>
+                        <div class="frow"><label>Bind IP</label><input type="text" id="settingBind" class="input" value="0.0.0.0"><span class="hint">0.0.0.0 = all interfaces</span></div>
+                        <div class="frow"><label>Port</label><input type="number" id="settingPort" class="input" value="1080" min="1024" max="65535"></div>
                     </div>
-                    <div class="s-card">
-                        <h3>HTTP Proxy</h3>
+                    <div class="card">
+                        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/></svg>HTTP Proxy</h3>
                         <p class="desc">HTTP/HTTPS forward proxy (tinyproxy).</p>
-                        <div class="toggle-row"><div class="toggle" id="httpToggle" onclick="toggleHttp()"></div><span style="font-size:13px">Enable HTTP Proxy</span></div>
-                        <div class="s-row"><label>Bind IP</label><input type="text" id="httpBind" class="s-input" value="0.0.0.0"></div>
-                        <div class="s-row"><label>Port</label><input type="number" id="httpPort" class="s-input" value="8888" min="1024" max="65535"></div>
+                        <div class="toggle-row"><div class="toggle" id="httpToggle" onclick="toggleHttp()"></div>Enable HTTP proxy</div>
+                        <div class="frow"><label>Bind IP</label><input type="text" id="httpBind" class="input" value="0.0.0.0"></div>
+                        <div class="frow"><label>Port</label><input type="number" id="httpPort" class="input" value="8888" min="1024" max="65535"></div>
                     </div>
-                    <div class="s-card">
-                        <h3>Auto-Reconnect</h3>
-                        <p class="desc">Reconnect on VPN drop. Retries 3x, then fails over to random.</p>
-                        <div class="toggle-row"><div class="toggle" id="arToggle" onclick="toggleAR()"></div><span style="font-size:13px">Enable Auto-Reconnect</span></div>
+                    <div class="card">
+                        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>Auto-Reconnect</h3>
+                        <p class="desc">Watches the tunnel (interface <em>and</em> real traffic flow) and reconnects automatically, with failover.</p>
+                        <div class="toggle-row"><div class="toggle" id="arToggle" onclick="toggleAR()"></div>Enable auto-reconnect</div>
                     </div>
-                    <div class="s-card">
-                        <h3>Boot Auto-Start</h3>
-                        <p class="desc">Container-start only: reconnects using preferred target or last successful connection.</p>
-                        <div class="toggle-row"><div class="toggle" id="asToggle" onclick="toggleAS()"></div><span style="font-size:13px">Enable Auto-Start on Container Boot</span></div>
-                        <div class="s-row"><label>Preferred Mode</label>
-                            <select id="asMode" class="filter-select" style="max-width:260px">
+                    <div class="card">
+                        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>Boot Auto-Start</h3>
+                        <p class="desc">On container boot, reconnect to your preferred (or last successful) server.</p>
+                        <div class="toggle-row"><div class="toggle" id="asToggle" onclick="toggleAS()"></div>Auto-start on boot</div>
+                        <div class="frow"><label>Preferred mode</label>
+                            <select id="asMode" class="input">
                                 <option value="">Use last successful mode</option>
                                 <option value="openvpn">OpenVPN</option>
                                 <option value="wireguard">WireGuard</option>
                             </select>
                         </div>
-                        <div class="s-row"><label>Preferred Server</label>
-                            <select id="asServer" class="filter-select" style="max-width:360px">
-                                <option value="">Use last successful server</option>
+                        <div class="frow"><label>Preferred server</label>
+                            <select id="asServer" class="input"><option value="">Use last successful server</option></select>
+                        </div>
+                        <div class="frow"><label>Failover policy</label>
+                            <select id="failoverScope" class="input">
+                                <option value="global">Retry, then random global failover</option>
+                                <option value="same_mode">Retry, then random same-mode failover</option>
+                                <option value="none">Retry only — no failover</option>
                             </select>
                         </div>
-                        <div class="s-row"><label>Reconnect Policy</label>
-                            <select id="failoverScope" class="filter-select" style="max-width:320px">
-                                <option value="global">Retry then random global failover</option>
-                                <option value="same_mode">Retry then random same-mode failover</option>
-                                <option value="none">Retry only, no failover</option>
-                            </select>
-                        </div>
-                        <div class="s-actions">
-                            <button class="btn btn-accent" onclick="saveAutostartSettings()">Save Auto-Start</button>
-                            <span class="s-status" id="autostartStatus"></span>
+                        <div class="actions">
+                            <button class="btn btn-accent" onclick="saveAutostartSettings()">Save auto-start</button>
+                            <span class="inline-status" id="autostartStatus"></span>
                         </div>
                     </div>
-                    <div class="s-actions">
-                        <button class="btn btn-accent" onclick="saveSettings()">Save & Apply</button>
-                        <span class="s-status" id="settingStatus"></span>
-                    </div>
-                    <div class="s-card">
-                        <h3>DNS Leak Test</h3>
-                        <p class="desc">Check if DNS queries leak outside the tunnel.</p>
-                        <button class="btn btn-ghost" onclick="runDnsTest()">Run Test</button>
+                    <div class="card">
+                        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>DNS Leak Test</h3>
+                        <p class="desc">Verify DNS queries resolve inside the tunnel.</p>
+                        <button class="btn btn-outline" onclick="runDnsTest()">Run test</button>
                         <div id="dnsResult"></div>
                     </div>
-                    <div class="s-card">
-                        <h3>Telegram Config</h3>
-                        <p class="desc">Use these in Telegram > Settings > Advanced > Connection type > Custom proxy</p>
-                        <div class="cfg-item"><span>Type</span><strong>SOCKS5</strong></div>
-                        <div class="cfg-item"><span>Server</span><strong id="tgServer">127.0.0.1</strong></div>
-                        <div class="cfg-item"><span>Port</span><strong id="tgPort">1080</strong></div>
-                        <div class="cfg-item"><span>Auth</span><strong>None</strong></div>
+                    <div class="card">
+                        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>Telegram Setup</h3>
+                        <p class="desc">Settings → Advanced → Connection type → Custom proxy</p>
+                        <div class="kv"><span>Type</span><strong>SOCKS5</strong></div>
+                        <div class="kv"><span>Server</span><strong id="tgServer">127.0.0.1</strong></div>
+                        <div class="kv"><span>Port</span><strong id="tgPort">1080</strong></div>
+                        <div class="kv"><span>Auth</span><strong>None</strong></div>
+                    </div>
+                    <div class="card wide">
+                        <div class="actions">
+                            <button class="btn btn-accent" onclick="saveSettings()">Save &amp; apply proxy settings</button>
+                            <span class="inline-status" id="settingStatus"></span>
+                        </div>
                     </div>
                 </div>
             </div>
 
-            <!-- Page: Profiles -->
+            <!-- ===== Page: Profiles ===== -->
             <div class="page" id="page-profiles" style="display:none">
-                <div class="s-card">
-                    <h3>Connection Profiles</h3>
-                    <p class="desc">Save server + settings presets.</p>
-                    <button class="btn btn-accent" onclick="showPF()">+ New Profile</button>
-                    <div id="pfForm" style="display:none;margin-top:14px;padding:14px;background:var(--bg);border-radius:8px">
-                        <div class="s-row"><label>Name</label><input type="text" id="pfName" class="s-input" placeholder="e.g. Streaming UK" maxlength="50"></div>
-                        <div class="s-row"><label>Server</label><select id="pfServer" class="filter-select" style="max-width:360px"></select></div>
-                        <div class="s-row"><label>SOCKS5 Port</label><input type="number" id="pfSP" class="s-input" value="1080"></div>
-                        <div class="s-row"><label>HTTP Port</label><input type="number" id="pfHP" class="s-input" value="8888"></div>
-                        <div style="display:flex;gap:6px"><button class="btn btn-accent" onclick="createProfile()">Save</button><button class="btn btn-ghost" onclick="hidePF()">Cancel</button></div>
+                <div class="card wide">
+                    <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>Connection Profiles</h3>
+                    <p class="desc">Saved server + proxy-port presets for one-click connections.</p>
+                    <button class="btn btn-accent" onclick="showPF()">+ New profile</button>
+                    <div id="pfForm" style="display:none;margin-top:16px;padding:16px;background:var(--bg-raise);border-radius:10px;max-width:420px">
+                        <div class="frow"><label>Name</label><input type="text" id="pfName" class="input" placeholder="e.g. Streaming UK" maxlength="50"></div>
+                        <div class="frow"><label>Server</label><select id="pfServer" class="input"></select></div>
+                        <div class="frow"><label>SOCKS5 port</label><input type="number" id="pfSP" class="input" value="1080"></div>
+                        <div class="frow"><label>HTTP port</label><input type="number" id="pfHP" class="input" value="8888"></div>
+                        <div class="actions"><button class="btn btn-accent" onclick="createProfile()">Save</button><button class="btn btn-outline" onclick="hidePF()">Cancel</button></div>
                     </div>
                     <div class="profiles-grid" id="profilesGrid"></div>
                 </div>
             </div>
 
-            <!-- Page: Logs -->
+            <!-- ===== Page: Logs ===== -->
             <div class="page" id="page-logs" style="display:none">
-                <div class="log-container">
-                    <div class="log-hdr"><span id="logTitle">VPN Log</span><button class="btn btn-ghost" onclick="refreshLogs()">Refresh</button></div>
-                    <div class="log-body" id="logBody">Loading...</div>
+                <div class="log-shell">
+                    <div class="log-head"><span id="logTitle">VPN Log</span><button class="btn btn-outline" onclick="refreshLogs()">Refresh</button></div>
+                    <div class="log-body" id="logBody">Loading…</div>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Live Log Slide Panel -->
-    <div class="log-panel" id="logPanel">
-        <div class="log-panel-hdr">
-            <span>Live Log</span>
-            <button class="log-panel-close" onclick="toggleLogPanel()">&times;</button>
-        </div>
-        <div class="log-panel-body" id="livePanelBody">Waiting for connection...</div>
+    <!-- Live log slide panel -->
+    <div class="live-panel" id="livePanel">
+        <div class="live-panel-head"><span>Live Log</span><button class="x-btn" onclick="toggleLivePanel()">&times;</button></div>
+        <div class="live-panel-body" id="livePanelBody">Waiting for output…</div>
     </div>
 </div>
 
-<!-- Overlay with live log -->
-<div class="overlay" id="overlay">
-    <div class="spinner"></div>
-    <div class="overlay-text" id="overlayText">Connecting...</div>
-    <div class="overlay-log" id="overlayLog"></div>
-</div>
 <div class="toast" id="toast"></div>
 
 <script>
-let allServers=[], wgServers=[], currentProto="UDP", vpnType="openvpn";
-let currentServer=null, currentVpnMode=null;
-let favorites=[], recentFiles=[], pingResults={};
-let prevConnected=null, _httpEnabled=true, _autoReconnect=true, _autoStartEnabled=false;
-let logPollTimer=null, statusTimer=null, bwTimer=null;
-let _autostartConfig={};
+// ============================================================
+// State
+// ============================================================
+let allServers = [], wgServers = [], currentProto = "UDP", vpnType = "openvpn";
+let currentServer = null, currentVpnMode = null;
+let favorites = [], recentFiles = [], pingResults = {};
+let prevConnected = null, prevOpBusy = false;
+let _httpEnabled = true, _autoReconnect = true, _autoStartEnabled = false;
+let _socksPort = 1080, _httpPort = 8888;
+let statusTimer = null, statusFast = false;
+let logPollTimer = null, tickerTimer = null;
 
-function flag(cc){return cc.toUpperCase().split("").map(c=>String.fromCodePoint(0x1f1e6+c.charCodeAt(0)-65)).join("")}
-function fmtB(b){if(b<1024)return b.toFixed(0)+" B";if(b<1048576)return(b/1024).toFixed(1)+" KB";if(b<1073741824)return(b/1048576).toFixed(1)+" MB";return(b/1073741824).toFixed(2)+" GB"}
-function fmtS(b){if(b<1024)return b.toFixed(0)+" B/s";if(b<1048576)return(b/1024).toFixed(1)+" KB/s";return(b/1048576).toFixed(1)+" MB/s"}
-function fmtD(s){if(!s||s<0)return"-";const h=Math.floor(s/3600),m=Math.floor(s%3600/60),sec=Math.floor(s%60);return h?`${h}h ${m}m`:`${m}m ${sec}s`}
-function esc(s){const d=document.createElement("div");d.textContent=s;return d.innerHTML}
+const flag = cc => cc.toUpperCase().split("").map(c => String.fromCodePoint(0x1f1e6 + c.charCodeAt(0) - 65)).join("");
+const fmtB = b => b < 1024 ? b.toFixed(0) + " B" : b < 1048576 ? (b/1024).toFixed(1) + " KB" : b < 1073741824 ? (b/1048576).toFixed(1) + " MB" : (b/1073741824).toFixed(2) + " GB";
+const fmtS = b => b < 1024 ? b.toFixed(0) + " B/s" : b < 1048576 ? (b/1024).toFixed(1) + " KB/s" : (b/1048576).toFixed(1) + " MB/s";
+const fmtD = s => { if (!s || s < 0) return "—"; const h = Math.floor(s/3600), m = Math.floor(s%3600/60), sec = Math.floor(s%60); return h ? `${h}h ${m}m` : `${m}m ${sec}s`; };
+const esc = s => { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; };
+const $ = id => document.getElementById(id);
 
-// -- Nav --
-function navTo(name,el){
-    document.querySelectorAll(".page").forEach(p=>p.style.display="none");
-    document.getElementById("page-"+name).style.display="block";
-    document.querySelectorAll(".nav-item").forEach(n=>n.classList.remove("active"));
-    if(el)el.classList.add("active");
-    document.getElementById("topbarTitle").textContent={servers:"Servers",settings:"Settings",profiles:"Profiles",logs:"Logs"}[name];
-    if(name==="logs")refreshLogs();
-    if(name==="settings")loadSettings();
-    if(name==="profiles")loadProfiles();
+// host name a server file maps to (matches status.current_server)
+function hostOf(file) {
+    if (file.endsWith(".conf")) return file.replace(".conf", "") + ".prod.surfshark.com";
+    return file.replace(".ovpn", "").replace(/_(tcp|udp)$/, "");
 }
-
-// -- Log Panel --
-function toggleLogPanel(){
-    const p=document.getElementById("logPanel");
-    p.classList.toggle("open");
-    if(p.classList.contains("open"))startLiveLog();
-    else stopLiveLog();
-}
-function startLiveLog(){
-    stopLiveLog();
-    pollLiveLog();
-    logPollTimer=setInterval(pollLiveLog,2000);
-}
-function stopLiveLog(){if(logPollTimer){clearInterval(logPollTimer);logPollTimer=null}}
-async function pollLiveLog(){
-    try{
-        const [vpnRes,evtRes]=await Promise.all([fetch("/api/logs?lines=200"),fetch("/api/events?lines=120")]);
-        const d=await vpnRes.json();
-        const ev=await evtRes.json();
-        const events=(ev.events||[]).map(x=>`[${x.ts}] [${x.kind}] ${x.message}`).join("\n");
-        const el=document.getElementById("livePanelBody");
-        el.textContent=("[VPN]\n"+(d.log||"No VPN logs."))+"\n\n[EVENTS]\n"+(events||"No events.");
-        el.scrollTop=el.scrollHeight;
-    }catch(e){}
+function serverMeta(host) {
+    const m = /^([a-z]{2})-([a-z]{3})\./.exec(host || "");
+    if (!m) return null;
+    const all = [...allServers, ...wgServers];
+    const found = all.find(s => s.country_code.toLowerCase() === m[1] && s.city_code === m[2]);
+    return found ? { country: found.country, city: found.city, cc: found.country_code } : null;
 }
 
-// -- Notifications --
-function reqNotif(){if("Notification"in window&&Notification.permission==="default")Notification.requestPermission()}
-function notify(t,b){if("Notification"in window&&Notification.permission==="granted")new Notification(t,{body:b})}
-
-// -- API --
-async function fetchStatus(){
-    try{const r=await fetch("/api/status");const d=await r.json();updateUI(d)}catch(e){}
-}
-async function fetchServers(){
-    try{
-        const[a,b]=await Promise.all([fetch("/api/servers"),fetch("/api/wg/servers")]);
-        const ad=await a.json(),bd=await b.json();
-        allServers=ad.servers||ad;wgServers=bd.servers||bd;renderServers();
-        populateAutostartServerOptions();
-    }catch(e){}
-}
-async function fetchPingCache(){try{const r=await fetch("/api/ping");const d=await r.json();if(d.ok)(d.results||[]).forEach(r=>{pingResults[r.file]=r});renderServers()}catch(e){}}
-async function fetchFavs(){try{const r=await fetch("/api/favorites");const d=await r.json();favorites=d.favorites||[];renderServers()}catch(e){}}
-async function fetchRecent(){try{const r=await fetch("/api/recent");const d=await r.json();recentFiles=(d.recent||[]).map(r=>r.file)}catch(e){}}
-async function toggleFav(e,f){e.stopPropagation();await fetch("/api/favorites",{method:favorites.includes(f)?"DELETE":"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({server:f})});await fetchFavs()}
-
-// Connect with live log streaming
-async function connectTo(file){
-    showOverlay("Connecting via OpenVPN...");startLogStream();
-    try{
-        const r=await fetch("/api/connect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({server:file})});
-        const d=await r.json();stopLogStream();hideOverlay();
-        d.ok?showToast(d.message,"success"):showToast(d.error||d.message,"error");
-        fetchStatus();fetchRecent();
-    }catch(e){stopLogStream();hideOverlay();showToast("Failed: "+e.message,"error")}
-}
-async function connectWg(file){
-    showOverlay("Connecting via WireGuard...");startLogStream();
-    try{
-        const r=await fetch("/api/wg/connect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({server:file})});
-        const d=await r.json();stopLogStream();hideOverlay();
-        d.ok?showToast(d.message,"success"):showToast(d.error||d.message,"error");
-        fetchStatus();fetchRecent();
-    }catch(e){stopLogStream();hideOverlay();showToast("Failed","error")}
-}
-async function connectRandom(){
-    showOverlay("Connecting to random server...");startLogStream();
-    try{
-        const r=await fetch("/api/connect/random",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({vpn_mode:vpnType,protocol:currentProto})});
-        const d=await r.json();stopLogStream();hideOverlay();
-        d.ok?showToast(d.message,"success"):showToast(d.error||d.message,"error");
-        fetchStatus();fetchRecent();
-    }catch(e){stopLogStream();hideOverlay();showToast("Failed","error")}
-}
-async function disconnect(){
-    showOverlay("Disconnecting...");
-    try{await fetch("/api/disconnect",{method:"POST"});hideOverlay();showToast("Disconnected","success");fetchStatus()}
-    catch(e){hideOverlay();showToast("Failed","error")}
+// ============================================================
+// Navigation
+// ============================================================
+function navTo(name, el) {
+    document.querySelectorAll(".page").forEach(p => p.style.display = "none");
+    $("page-" + name).style.display = "block";
+    document.querySelectorAll(".nav-item").forEach(n => n.classList.remove("active"));
+    if (el) el.classList.add("active");
+    $("pageTitle").textContent = { servers: "Servers", settings: "Settings", profiles: "Profiles", logs: "Logs" }[name];
+    if (name === "logs") refreshLogs();
+    if (name === "settings") loadSettings();
+    if (name === "profiles") loadProfiles();
 }
 
-async function reconnectNow(){
-    showOverlay("Reconnecting now...");startLogStream();
-    try{
-        const r=await fetch("/api/reconnect-now",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({vpn_mode:currentVpnMode})});
-        const d=await r.json();stopLogStream();hideOverlay();
-        d.ok?showToast(d.message||"Reconnected","success"):showToast(d.error||d.message||"Reconnect failed","error");
-        fetchStatus();fetchRecent();
-    }catch(e){stopLogStream();hideOverlay();showToast("Reconnect failed","error")}
+// ============================================================
+// Status polling — adaptive: 2s while an operation runs, 6s idle
+// ============================================================
+function schedulePoll(fast) {
+    if (fast === statusFast && statusTimer) return;
+    statusFast = fast;
+    if (statusTimer) clearInterval(statusTimer);
+    statusTimer = setInterval(fetchStatus, fast ? 2000 : 6000);
+}
+async function fetchStatus() {
+    try { const r = await fetch("/api/status"); updateUI(await r.json()); } catch (e) {}
 }
 
-// Log streaming during overlay
-let logStreamTimer=null;
-function startLogStream(){
-    const el=document.getElementById("overlayLog");el.textContent="";
-    pollOverlayLog();
-    logStreamTimer=setInterval(pollOverlayLog,1500);
-}
-function stopLogStream(){if(logStreamTimer){clearInterval(logStreamTimer);logStreamTimer=null}}
-async function pollOverlayLog(){
-    try{
-        const r=await fetch("/api/logs?lines=30");const d=await r.json();
-        const el=document.getElementById("overlayLog");
-        el.textContent=d.log||"Waiting for log output...";
-        el.scrollTop=el.scrollHeight;
-    }catch(e){}
-}
+function updateUI(d) {
+    currentServer = d.current_server; currentVpnMode = d.vpn_mode;
+    const busy = d.op_state !== "idle";
+    schedulePoll(busy);
 
-async function refreshLogs(){
-    try{const r=await fetch("/api/logs?lines=300");const d=await r.json();const el=document.getElementById("logBody");el.textContent=d.log||"No logs.";el.scrollTop=el.scrollHeight;document.getElementById("logTitle").textContent=currentVpnMode==="wireguard"?"WireGuard Log":"OpenVPN Log"}catch(e){document.getElementById("logBody").textContent="Failed."}
-}
-async function pingVisible(){
-    const cards=document.querySelectorAll("[data-file]");
-    const files=Array.from(cards).map(c=>c.dataset.file).slice(0,20);
-    if(!files.length)return;
-    try{const r=await fetch("/api/ping",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({servers:files})});const d=await r.json();if(d.ok){d.results.forEach(r=>{pingResults[r.file]=r});renderServers()}}catch(e){showToast("Ping failed","error")}
-}
-async function fetchBW(){
-    try{const r=await fetch("/api/bandwidth");const d=await r.json();document.getElementById("bSpeed").textContent="\u2193"+fmtS(d.rx_speed)+" \u2191"+fmtS(d.tx_speed);document.getElementById("bData").textContent="\u2193"+fmtB(d.rx_total)+" \u2191"+fmtB(d.tx_total)}catch(e){}
-}
-async function fetchGeo(){try{const r=await fetch("/api/geoip");const d=await r.json();if(d.ok)document.getElementById("bGeo").textContent=`${d.city}, ${d.country}`}catch(e){}}
+    const hero = $("hero");
+    hero.classList.toggle("busy", busy);
+    hero.classList.toggle("connected", d.connected && !busy);
 
-// -- UI --
-function updateUI(d){
-    currentServer=d.current_server;currentVpnMode=d.vpn_mode;
-    const dot=document.getElementById("bannerDot"),title=document.getElementById("bannerTitle"),sub=document.getElementById("bannerSub");
-    const stats=document.getElementById("bannerStats"),btnDc=document.getElementById("btnDisconnect"),btnRc=document.getElementById("btnReconnect");
-    const sDot=document.getElementById("sidebarDot"),sLabel=document.getElementById("sidebarLabel"),sMeta=document.getElementById("sidebarMeta");
-
-    if(prevConnected!==null&&prevConnected!==d.connected){d.connected?notify("VPN Connected",d.current_server||""):notify("VPN Disconnected","")}
-    prevConnected=d.connected;
-
-    if(d.reconnecting){
-        dot.className="banner-dot warn";sDot.className="st-dot warn";
-        title.textContent=`Reconnecting (attempt ${d.reconnect_attempts})`;
-        sLabel.innerHTML="<strong>Reconnecting...</strong>";
-        const why=d.last_reconnect_reason?`Reason: ${d.last_reconnect_reason}`:"";
-        const err=d.last_reconnect_error?` | Last error: ${d.last_reconnect_error}`:"";
-        sub.textContent=(why+err).trim();btnDc.style.display="inline-block";btnRc.style.display="none";stats.style.display="none";sMeta.style.display="none";
-        return;
+    // transition notifications + completion toasts
+    if (prevOpBusy && !busy) {
+        if (d.last_error) showToast(d.last_error, "error");
+        else if (d.op_message) showToast(d.op_message, "success");
+        stopTicker();
+        fetchRecent();
     }
-    if(d.connected){
-        const vl=d.vpn_mode==="wireguard"?"WireGuard":"OpenVPN";
-        dot.className="banner-dot on";sDot.className="st-dot on";
-        title.textContent="Connected via "+vl;sub.textContent="";
-        btnDc.style.display="inline-block";btnRc.style.display="inline-block";stats.style.display="flex";
-        document.getElementById("bMode").textContent=vl;
-        document.getElementById("bServer").textContent=d.current_server||"-";
-        document.getElementById("bIp").textContent=d.vpn_ip||"-";
-        if(d.connected_since){const dur=Math.floor(Date.now()/1000-d.connected_since);document.getElementById("bDur").textContent=fmtD(dur)}
-        sLabel.innerHTML="<strong>"+vl+"</strong>";sMeta.style.display="block";
-        document.getElementById("sidebarServer").textContent=d.current_server||"";
-        document.getElementById("sidebarIp").textContent=d.vpn_ip||"";
-        if(d.connected_since){document.getElementById("sidebarDuration").textContent=fmtD(Math.floor(Date.now()/1000-d.connected_since))}
+    prevOpBusy = busy;
+    if (prevConnected !== null && prevConnected !== d.connected) {
+        d.connected ? notify("VPN Connected", d.current_server || "") : notify("VPN Disconnected", "");
+    }
+    prevConnected = d.connected;
+
+    const dot = $("heroDot"), sDot = $("sideDot");
+    const btnDc = $("btnDisconnect"), btnRc = $("btnReconnect");
+
+    if (busy) {
+        dot.className = "pulse-dot busy"; sDot.className = "pulse-dot busy";
+        $("heroState").textContent = d.op_state.toUpperCase();
+        let title = d.op_message || "Working…";
+        if (d.op_state === "reconnecting" && d.op_attempts_max > 1)
+            title = `Reconnecting — attempt ${d.op_attempt}/${d.op_attempts_max}`;
+        $("heroTitle").textContent = title;
+        const sub = [];
+        if (d.op_target) sub.push(d.op_target);
+        if (d.op_reason && d.op_reason !== "user") sub.push("reason: " + d.op_reason);
+        if (d.last_error) sub.push("last error: " + d.last_error);
+        $("heroSub").textContent = sub.join("  ·  ") || "You can keep browsing — this won't block the dashboard.";
+        $("heroSub").className = "hero-sub" + (d.last_error ? " err" : "");
+        $("ringCore").innerHTML = '<span style="font-size:20px">⏳</span>';
+        $("heroStats").style.display = "none";
+        $("sideLabel").textContent = d.op_state === "disconnecting" ? "Stopping…" : "Connecting…";
+        $("sideMeta").style.display = "none";
+        btnDc.style.display = d.op_state === "disconnecting" ? "none" : "inline-flex";
+        btnRc.style.display = "none";
+        startTicker();
+    } else if (d.connected) {
+        const vl = d.vpn_mode === "wireguard" ? "WireGuard" : "OpenVPN";
+        dot.className = "pulse-dot on"; sDot.className = "pulse-dot on";
+        $("heroState").textContent = "Secure · " + vl;
+        const meta = serverMeta(d.current_server);
+        $("ringCore").innerHTML = meta ? `<span>${flag(meta.cc)}</span>` : '<span style="color:var(--accent)">●</span>';
+        $("heroTitle").textContent = meta ? `${meta.city}, ${meta.country}` : (d.current_server || "Connected");
+        $("heroSub").textContent = d.current_server || "";
+        $("heroSub").className = "hero-sub";
+        $("heroStats").style.display = "grid";
+        $("stMode").textContent = vl;
+        $("stIp").textContent = d.vpn_ip || "checking…";
+        if (d.connected_since) $("stUptime").textContent = fmtD(Math.floor(Date.now()/1000 - d.connected_since));
+        $("sideLabel").textContent = vl + " up";
+        $("sideMeta").style.display = "block";
+        $("sideServer").textContent = d.current_server || "";
+        $("sideIp").textContent = d.vpn_ip || "";
+        if (d.connected_since) $("sideUptime").textContent = "up " + fmtD(Math.floor(Date.now()/1000 - d.connected_since));
+        btnDc.style.display = "inline-flex"; btnRc.style.display = "inline-flex";
         fetchGeo();
-        updateBadges(d.socks_bind,d.socks_port,d.http_proxy_enabled,d.http_proxy_port);
     } else {
-        dot.className="banner-dot";sDot.className="st-dot";
-        title.textContent="Disconnected";
-        sub.textContent=d.last_reconnect_error?`Last issue: ${d.last_reconnect_error}`:"Select a server to connect";
-        btnDc.style.display="none";btnRc.style.display="none";stats.style.display="none";
-        sLabel.innerHTML="Disconnected";sMeta.style.display="none";
+        dot.className = "pulse-dot"; sDot.className = "pulse-dot";
+        $("heroState").textContent = "Offline";
+        $("ringCore").innerHTML = '<span class="off-icon">●</span>';
+        $("heroTitle").textContent = "Not connected";
+        $("heroSub").textContent = d.last_error ? "Last issue: " + d.last_error : "Pick a server below to bring the tunnel up.";
+        $("heroSub").className = "hero-sub" + (d.last_error ? " err" : "");
+        $("heroStats").style.display = "none";
+        $("sideLabel").textContent = "Offline"; $("sideMeta").style.display = "none";
+        btnDc.style.display = "none"; btnRc.style.display = "none";
     }
+    updateEndpoints(d.socks_bind, d.socks_port, d.http_proxy_enabled, d.http_proxy_port);
     renderServers();
 }
 
-function renderServers(){
-    const list=document.getElementById("serverList");
-    const q=document.getElementById("searchBox").value.toLowerCase();
-    const sort=document.getElementById("sortSel").value;
-    const isWg=vpnType==="wireguard";
-    let src=isWg?[...wgServers]:[...allServers];
-    let f=src.filter(s=>{
-        if(!isWg&&s.protocol!==currentProto)return false;
-        if(q)return s.country.toLowerCase().includes(q)||s.city.toLowerCase().includes(q)||s.country_code.toLowerCase().includes(q);
+// connecting log ticker in the hero card
+function startTicker() {
+    if (tickerTimer) return;
+    pollTicker();
+    tickerTimer = setInterval(pollTicker, 2000);
+}
+function stopTicker() { if (tickerTimer) { clearInterval(tickerTimer); tickerTimer = null; } $("opTicker").textContent = ""; }
+async function pollTicker() {
+    try {
+        const r = await fetch("/api/logs?lines=6"); const d = await r.json();
+        const el = $("opTicker");
+        el.textContent = (d.log || "").trim() || "waiting for log output…";
+        el.scrollTop = el.scrollHeight;
+    } catch (e) {}
+}
+
+// ============================================================
+// Data fetchers
+// ============================================================
+async function fetchServers() {
+    try {
+        const [a, b] = await Promise.all([fetch("/api/servers"), fetch("/api/wg/servers")]);
+        allServers = (await a.json()).servers || []; wgServers = (await b.json()).servers || [];
+        renderServers(); populateAutostartServerOptions();
+    } catch (e) {}
+}
+async function fetchPingCache() { try { const r = await fetch("/api/ping"); const d = await r.json(); if (d.ok) (d.results||[]).forEach(x => pingResults[x.file] = x); renderServers(); } catch (e) {} }
+async function fetchFavs() { try { const r = await fetch("/api/favorites"); favorites = (await r.json()).favorites || []; renderServers(); } catch (e) {} }
+async function fetchRecent() { try { const r = await fetch("/api/recent"); recentFiles = ((await r.json()).recent || []).map(x => x.file); } catch (e) {} }
+async function fetchBW() {
+    try {
+        const r = await fetch("/api/bandwidth"); const d = await r.json();
+        $("stSpeed").textContent = "↓" + fmtS(d.rx_speed) + "  ↑" + fmtS(d.tx_speed);
+        $("stData").textContent = "↓" + fmtB(d.rx_total) + "  ↑" + fmtB(d.tx_total);
+    } catch (e) {}
+}
+let _geoFetched = null;
+async function fetchGeo() {
+    if (_geoFetched === currentServer) return;
+    try { const r = await fetch("/api/geoip"); const d = await r.json(); if (d.ok) { $("stGeo").textContent = `${d.city}, ${d.country}`; _geoFetched = currentServer; } } catch (e) {}
+}
+async function toggleFav(e, f) {
+    e.stopPropagation();
+    await fetch("/api/favorites", { method: favorites.includes(f) ? "DELETE" : "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({server: f}) });
+    await fetchFavs();
+}
+
+// ============================================================
+// Actions — all non-blocking: POST returns instantly, UI polls
+// ============================================================
+async function post(url, body) {
+    const r = await fetch(url, { method: "POST", headers: {"Content-Type":"application/json"}, body: body ? JSON.stringify(body) : undefined });
+    return { status: r.status, data: await r.json() };
+}
+function handleAsyncStart(res, startMsg) {
+    if (res.data.ok) { showToast(startMsg, "success"); fetchStatus(); }
+    else showToast(res.data.error || res.data.message || "Request rejected", "error");
+}
+async function connectTo(file)  { try { handleAsyncStart(await post("/api/connect", {server:file}), "Connecting — watch the status card"); } catch(e){ showToast("Request failed","error"); } }
+async function connectWg(file)  { try { handleAsyncStart(await post("/api/wg/connect", {server:file}), "Connecting via WireGuard…"); } catch(e){ showToast("Request failed","error"); } }
+async function connectRandom()  { try { const res = await post("/api/connect/random", {vpn_mode:vpnType, protocol:currentProto}); handleAsyncStart(res, "Connecting to " + (res.data.server||"random server") + "…"); } catch(e){ showToast("Request failed","error"); } }
+async function disconnect()     { try { handleAsyncStart(await post("/api/disconnect"), "Disconnecting…"); } catch(e){ showToast("Request failed","error"); } }
+async function reconnectNow()   { try { handleAsyncStart(await post("/api/reconnect-now", {vpn_mode:currentVpnMode}), "Reconnecting…"); } catch(e){ showToast("Request failed","error"); } }
+
+async function pingVisible() {
+    const files = Array.from(document.querySelectorAll("[data-file]")).map(c => c.dataset.file).slice(0, 20);
+    if (!files.length) return;
+    showToast("Pinging " + files.length + " servers…", "success");
+    try {
+        const res = await post("/api/ping", { servers: files });
+        if (res.data.ok) { res.data.results.forEach(x => pingResults[x.file] = x); renderServers(); }
+    } catch (e) { showToast("Ping failed", "error"); }
+}
+
+// ============================================================
+// Server list
+// ============================================================
+function setVpnType(t, btn) { vpnType = t; btn.parentElement.querySelectorAll("button").forEach(b => b.classList.remove("active")); btn.classList.add("active"); $("protoSeg").style.display = t === "openvpn" ? "flex" : "none"; renderServers(); }
+function setProto(p, btn) { currentProto = p; btn.parentElement.querySelectorAll("button").forEach(b => b.classList.remove("active")); btn.classList.add("active"); renderServers(); }
+
+function renderServers() {
+    const list = $("serverList");
+    if (!list) return;
+    const q = $("searchBox").value.toLowerCase();
+    const sort = $("sortSel").value;
+    const isWg = vpnType === "wireguard";
+    let f = (isWg ? [...wgServers] : [...allServers]).filter(s => {
+        if (!isWg && s.protocol !== currentProto) return false;
+        if (q) return s.country.toLowerCase().includes(q) || s.city.toLowerCase().includes(q) || s.country_code.toLowerCase().includes(q);
         return true;
     });
-    if(sort==="name")f.sort((a,b)=>a.country.localeCompare(b.country)||a.city.localeCompare(b.city));
-    else if(sort==="country")f.sort((a,b)=>a.country_code.localeCompare(b.country_code));
-    else if(sort==="latency")f.sort((a,b)=>(pingResults[a.file]?.latency_ms??9999)-(pingResults[b.file]?.latency_ms??9999));
-    else if(sort==="recent")f.sort((a,b)=>{const ia=recentFiles.indexOf(a.file),ib=recentFiles.indexOf(b.file);return(ia===-1?999:ia)-(ib===-1?999:ib)});
-    if(!f.length){list.innerHTML='<div class="no-results">No servers match.</div>';return}
-    list.innerHTML=f.map(s=>{
-        const hn=isWg?s.file.replace(".conf","")+".prod.surfshark.com":s.file.replace(".ovpn","").replace("_"+s.protocol.toLowerCase(),"");
-        const active=currentServer&&currentServer===hn;
-        const fn=isWg?`connectWg('${s.file}')`:`connectTo('${s.file}')`;
-        const fav=favorites.includes(s.file);
-        const rec=recentFiles.includes(s.file);
-        const p=pingResults[s.file];
-        let pingH="";
-        if(p){const c=p.latency_ms===null?"":p.latency_ms<100?"good":p.latency_ms<200?"med":"bad";pingH=`<span class="ping-dot ${c}"></span>${p.latency_ms!==null?p.latency_ms+"ms":"?"}`}
-        let badgeH="";
-        if(active)badgeH='<span class="srv-badge live">LIVE</span>';
-        else if(rec)badgeH='<span class="srv-badge recent">RECENT</span>';
-        return `<div class="srv ${active?"active":""}" onclick="${fn}" data-file="${s.file}">
+
+    if (sort === "latency") f.sort((a,b) => (pingResults[a.file]?.latency_ms ?? 9999) - (pingResults[b.file]?.latency_ms ?? 9999));
+    else if (sort === "recent") f.sort((a,b) => { const ia = recentFiles.indexOf(a.file), ib = recentFiles.indexOf(b.file); return (ia===-1?999:ia) - (ib===-1?999:ib); });
+    else if (sort === "favorites") f.sort((a,b) => (favorites.includes(b.file)?1:0) - (favorites.includes(a.file)?1:0) || a.country.localeCompare(b.country));
+    else f.sort((a,b) => a.country.localeCompare(b.country) || a.city.localeCompare(b.city));
+
+    $("countChip").textContent = f.length + " server" + (f.length === 1 ? "" : "s");
+    if (!f.length) { list.innerHTML = '<div class="empty">No servers match your filters.</div>'; return; }
+
+    const grouped = sort === "name";
+    let html = "", lastCountry = null, rowsOpen = false;
+    for (const s of f) {
+        if (grouped && s.country !== lastCountry) {
+            if (rowsOpen) html += "</div>";
+            html += `<div class="country-head">${flag(s.country_code)} ${esc(s.country)}</div><div class="srv-rows">`;
+            rowsOpen = true; lastCountry = s.country;
+        } else if (!grouped && !rowsOpen) { html += '<div class="srv-rows">'; rowsOpen = true; }
+
+        const active = currentServer && currentServer === hostOf(s.file);
+        const fn = s.file.endsWith(".conf") ? `connectWg('${s.file}')` : `connectTo('${s.file}')`;
+        const fav = favorites.includes(s.file);
+        const rec = recentFiles.includes(s.file);
+        const p = pingResults[s.file];
+        let pingH = '<span style="color:var(--ink-faint)">·</span>';
+        if (p) {
+            const c = p.latency_ms === null ? "bad" : p.latency_ms < 100 ? "good" : p.latency_ms < 200 ? "med" : "bad";
+            pingH = `<span class="ping-dot ${c}"></span>${p.latency_ms !== null ? p.latency_ms + " ms" : "n/a"}`;
+        }
+        const badge = active ? '<span class="tag live">Live</span>' : rec ? '<span class="tag recent">Recent</span>' : "";
+        html += `<div class="srv ${active ? "active" : ""}" onclick="${fn}" data-file="${s.file}">
             <div class="srv-flag">${flag(s.country_code)}</div>
-            <div class="srv-info"><div class="srv-name">${s.country}</div><div class="srv-city">${s.city} ${badgeH}</div></div>
+            <div class="srv-name"><span class="city">${esc(s.city)}</span><span class="cc">${s.country_code}-${s.city_code}</span>${badge}</div>
             <div class="srv-ping">${pingH}</div>
             <div class="srv-proto">${s.protocol}</div>
-            <div>${badgeH?'':''}</div>
-            <button class="srv-fav" onclick="toggleFav(event,'${s.file}')">${fav?"\u2605":"\u2606"}</button>
-        </div>`}).join("");
+            <button class="srv-fav ${fav ? "faved" : ""}" onclick="toggleFav(event,'${s.file}')">${fav ? "★" : "☆"}</button>
+        </div>`;
+    }
+    if (rowsOpen) html += "</div>";
+    list.innerHTML = html;
 }
 
-// -- Controls --
-function setVpnType(t,btn){vpnType=t;btn.parentElement.querySelectorAll(".seg-btn").forEach(b=>b.classList.remove("active"));btn.classList.add("active");document.getElementById("protoToggle").style.display=t==="openvpn"?"flex":"none";renderServers()}
-function setProto(p,btn){currentProto=p;btn.parentElement.querySelectorAll(".seg-btn").forEach(b=>b.classList.remove("active"));btn.classList.add("active");renderServers()}
-function showOverlay(t){document.getElementById("overlayText").textContent=t;document.getElementById("overlayLog").textContent="";document.getElementById("overlay").classList.add("visible")}
-function hideOverlay(){document.getElementById("overlay").classList.remove("visible")}
-function showToast(m,t){const el=document.getElementById("toast");el.textContent=m;el.className="toast "+t+" visible";setTimeout(()=>el.classList.remove("visible"),3500)}
+// ============================================================
+// Live log panel
+// ============================================================
+function toggleLivePanel() {
+    const p = $("livePanel");
+    p.classList.toggle("open");
+    if (p.classList.contains("open")) { pollLiveLog(); logPollTimer = setInterval(pollLiveLog, 2500); }
+    else if (logPollTimer) { clearInterval(logPollTimer); logPollTimer = null; }
+}
+async function pollLiveLog() {
+    try {
+        const [vpnRes, evtRes] = await Promise.all([fetch("/api/logs?lines=200"), fetch("/api/events?lines=120")]);
+        const d = await vpnRes.json(); const ev = await evtRes.json();
+        const events = (ev.events || []).map(x => `[${x.ts}] [${x.kind}] ${x.message}`).join("\n");
+        const el = $("livePanelBody");
+        el.textContent = "[VPN]\n" + (d.log || "No VPN logs.") + "\n\n[EVENTS]\n" + (events || "No events.");
+        el.scrollTop = el.scrollHeight;
+    } catch (e) {}
+}
+async function refreshLogs() {
+    try {
+        const r = await fetch("/api/logs?lines=300"); const d = await r.json();
+        const el = $("logBody"); el.textContent = d.log || "No logs."; el.scrollTop = el.scrollHeight;
+        $("logTitle").textContent = currentVpnMode === "wireguard" ? "WireGuard Log" : "OpenVPN Log";
+    } catch (e) { $("logBody").textContent = "Failed to load logs."; }
+}
 
-// -- Settings --
-async function loadSettings(){
-    try{const r=await fetch("/api/settings");const d=await r.json();
-        document.getElementById("settingBind").value=d.socks_bind;document.getElementById("settingPort").value=d.socks_port;
-        document.getElementById("httpBind").value=d.http_proxy_bind||"0.0.0.0";document.getElementById("httpPort").value=d.http_proxy_port||8888;
-        _httpEnabled=d.http_proxy_enabled!==false;_autoReconnect=d.auto_reconnect!==false;
-        document.getElementById("httpToggle").classList.toggle("active",_httpEnabled);
-        document.getElementById("arToggle").classList.toggle("active",_autoReconnect);
-        updateBadges(d.socks_bind,d.socks_port,_httpEnabled,d.http_proxy_port);
+// ============================================================
+// Settings
+// ============================================================
+async function loadSettings() {
+    try {
+        const r = await fetch("/api/settings"); const d = await r.json();
+        $("settingBind").value = d.socks_bind; $("settingPort").value = d.socks_port;
+        $("httpBind").value = d.http_proxy_bind || "0.0.0.0"; $("httpPort").value = d.http_proxy_port || 8888;
+        _httpEnabled = d.http_proxy_enabled !== false; _autoReconnect = d.auto_reconnect !== false;
+        $("httpToggle").classList.toggle("active", _httpEnabled);
+        $("arToggle").classList.toggle("active", _autoReconnect);
+        updateEndpoints(d.socks_bind, d.socks_port, _httpEnabled, d.http_proxy_port);
         loadAutostartSettings();
-    }catch(e){}
+    } catch (e) {}
 }
-function toggleHttp(){_httpEnabled=!_httpEnabled;document.getElementById("httpToggle").classList.toggle("active",_httpEnabled)}
-function toggleAR(){_autoReconnect=!_autoReconnect;document.getElementById("arToggle").classList.toggle("active",_autoReconnect)}
-function toggleAS(){_autoStartEnabled=!_autoStartEnabled;document.getElementById("asToggle").classList.toggle("active",_autoStartEnabled)}
+function toggleHttp() { _httpEnabled = !_httpEnabled; $("httpToggle").classList.toggle("active", _httpEnabled); }
+function toggleAR()   { _autoReconnect = !_autoReconnect; $("arToggle").classList.toggle("active", _autoReconnect); }
+function toggleAS()   { _autoStartEnabled = !_autoStartEnabled; $("asToggle").classList.toggle("active", _autoStartEnabled); }
 
-function populateAutostartServerOptions(){
-    const sel=document.getElementById("asServer");
-    if(!sel)return;
-    const prev=sel.value;
-    const opts=["<option value=''>Use last successful server</option>"];
-    const rows=[...allServers,...wgServers];
-    rows.forEach(s=>opts.push(`<option value="${s.file}">${s.country} - ${s.city} (${s.protocol})</option>`));
-    sel.innerHTML=opts.join("");
-    if(prev)sel.value=prev;
+function populateAutostartServerOptions() {
+    const sel = $("asServer"); if (!sel) return;
+    const prev = sel.value;
+    const opts = ["<option value=''>Use last successful server</option>"];
+    [...allServers, ...wgServers].forEach(s => opts.push(`<option value="${s.file}">${s.country} — ${s.city} (${s.protocol})</option>`));
+    sel.innerHTML = opts.join("");
+    if (prev) sel.value = prev;
 }
-
-async function loadAutostartSettings(){
-    try{
-        const r=await fetch("/api/autostart");
-        const d=await r.json();
-        if(!d.ok)return;
-        _autostartConfig=d.config||{};
-        _autoStartEnabled=_autostartConfig.enabled===true;
-        document.getElementById("asToggle").classList.toggle("active",_autoStartEnabled);
-        document.getElementById("asMode").value=_autostartConfig.preferred_mode||"";
-        if(document.getElementById("asServer").options.length<=1)populateAutostartServerOptions();
-        document.getElementById("asServer").value=_autostartConfig.preferred_server||"";
-        document.getElementById("failoverScope").value=_autostartConfig.failover_scope||"global";
-    }catch(e){}
+async function loadAutostartSettings() {
+    try {
+        const r = await fetch("/api/autostart"); const d = await r.json();
+        if (!d.ok) return;
+        const cfg = d.config || {};
+        _autoStartEnabled = cfg.enabled === true;
+        $("asToggle").classList.toggle("active", _autoStartEnabled);
+        $("asMode").value = cfg.preferred_mode || "";
+        if ($("asServer").options.length <= 1) populateAutostartServerOptions();
+        $("asServer").value = cfg.preferred_server || "";
+        $("failoverScope").value = cfg.failover_scope || "global";
+    } catch (e) {}
 }
-
-async function saveAutostartSettings(){
-    const st=document.getElementById("autostartStatus");
-    const payload={
-        enabled:_autoStartEnabled,
-        preferred_mode:document.getElementById("asMode").value||null,
-        preferred_server:document.getElementById("asServer").value||null,
-        failover_scope:document.getElementById("failoverScope").value||"global",
-        retry_count:3,
-        retry_delay_sec:5
+async function saveAutostartSettings() {
+    const st = $("autostartStatus");
+    const payload = {
+        enabled: _autoStartEnabled,
+        preferred_mode: $("asMode").value || null,
+        preferred_server: $("asServer").value || null,
+        failover_scope: $("failoverScope").value || "global",
+        retry_count: 3, retry_delay_sec: 5,
     };
-    try{
-        const r=await fetch("/api/autostart",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-        const d=await r.json();
-        if(d.ok){st.textContent="Saved";st.style.color="var(--accent)";showToast("Auto-start settings saved","success")}
-        else{st.textContent=d.error||"Failed";st.style.color="var(--danger)"}
-    }catch(e){st.textContent="Failed";st.style.color="var(--danger)"}
-    setTimeout(()=>{st.textContent=""},3000);
+    try {
+        const res = await post("/api/autostart", payload);
+        if (res.data.ok) { st.textContent = "Saved"; st.style.color = "var(--accent)"; showToast("Auto-start settings saved", "success"); }
+        else { st.textContent = res.data.error || "Failed"; st.style.color = "var(--coral)"; }
+    } catch (e) { st.textContent = "Failed"; st.style.color = "var(--coral)"; }
+    setTimeout(() => st.textContent = "", 3000);
 }
-async function saveSettings(){
-    const st=document.getElementById("settingStatus");
-    const p={socks_bind:document.getElementById("settingBind").value.trim(),socks_port:parseInt(document.getElementById("settingPort").value,10),http_proxy_enabled:_httpEnabled,http_proxy_bind:document.getElementById("httpBind").value.trim(),http_proxy_port:parseInt(document.getElementById("httpPort").value,10),auto_reconnect:_autoReconnect};
-    try{const r=await fetch("/api/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(p)});const d=await r.json();
-        if(d.ok){st.textContent="Saved!";st.style.color="var(--accent)";updateBadges(d.socks_bind,d.socks_port,d.http_proxy_enabled,d.http_proxy_port);showToast("Settings saved","success")}
-        else{st.textContent=d.error;st.style.color="var(--danger)"}
-    }catch(e){st.textContent="Failed";st.style.color="var(--danger)"}
-    setTimeout(()=>{st.textContent=""},3000);
+async function saveSettings() {
+    const st = $("settingStatus");
+    const p = {
+        socks_bind: $("settingBind").value.trim(),
+        socks_port: parseInt($("settingPort").value, 10),
+        http_proxy_enabled: _httpEnabled,
+        http_proxy_bind: $("httpBind").value.trim(),
+        http_proxy_port: parseInt($("httpPort").value, 10),
+        auto_reconnect: _autoReconnect,
+    };
+    try {
+        const res = await post("/api/settings", p);
+        if (res.data.ok) {
+            st.textContent = "Saved"; st.style.color = "var(--accent)";
+            updateEndpoints(res.data.socks_bind, res.data.socks_port, res.data.http_proxy_enabled, res.data.http_proxy_port);
+            showToast("Settings saved", "success");
+        } else { st.textContent = res.data.error; st.style.color = "var(--coral)"; }
+    } catch (e) { st.textContent = "Failed"; st.style.color = "var(--coral)"; }
+    setTimeout(() => st.textContent = "", 3000);
 }
-function updateBadges(bind,port,httpOn,httpPort){
-    const a=(bind==="0.0.0.0")?"127.0.0.1":bind;
-    document.getElementById("badgeSocks").textContent="SOCKS5 :"+port;
-    const hb=document.getElementById("badgeHttp");hb.textContent="HTTP :"+(httpPort||8888);hb.style.display=httpOn?"inline":"none";
-    const ts=document.getElementById("tgServer"),tp=document.getElementById("tgPort");if(ts)ts.textContent=a;if(tp)tp.textContent=port;
+function updateEndpoints(bind, port, httpOn, httpPort) {
+    const host = (bind === "0.0.0.0") ? "127.0.0.1" : bind;
+    _socksPort = port; _httpPort = httpPort || 8888;
+    $("epSocks").textContent = host + ":" + port;
+    $("epHttp").textContent = host + ":" + _httpPort;
+    $("epHttpRow").style.opacity = httpOn ? "1" : "0.35";
+    $("tgServer").textContent = host; $("tgPort").textContent = port;
 }
-async function runDnsTest(){
-    const el=document.getElementById("dnsResult");el.innerHTML='<div class="dns-result unknown">Running...</div>';
-    try{const r=await fetch("/api/dnstest");const d=await r.json();const c=d.status==="leak"?"leak":d.status==="secure"?"secure":"unknown";el.innerHTML=`<div class="dns-result ${c}">${d.message}</div>`}catch(e){el.innerHTML='<div class="dns-result unknown">Failed</div>'}
+function copyEndpoint(kind) {
+    const txt = kind === "socks" ? $("epSocks").textContent : $("epHttp").textContent;
+    navigator.clipboard?.writeText(txt).then(() => showToast("Copied " + txt, "success"));
+}
+async function runDnsTest() {
+    const el = $("dnsResult"); el.innerHTML = '<div class="dns-result unknown">Running…</div>';
+    try {
+        const r = await fetch("/api/dnstest"); const d = await r.json();
+        const c = d.status === "leak" ? "leak" : d.status === "secure" ? "secure" : "unknown";
+        el.innerHTML = `<div class="dns-result ${c}">${esc(d.message)}</div>`;
+    } catch (e) { el.innerHTML = '<div class="dns-result unknown">Test failed</div>'; }
 }
 
-// -- Profiles --
-async function loadProfiles(){
-    try{const r=await fetch("/api/profiles");const d=await r.json();const g=document.getElementById("profilesGrid");const ps=d.profiles||[];
-        if(!ps.length){g.innerHTML='<p style="color:var(--text-dim);padding:14px 0">No profiles yet.</p>';return}
-        g.innerHTML=ps.map(p=>`<div class="p-card"><div class="p-name">${esc(p.name)}</div><div class="p-detail">${esc(p.server)} &middot; ${p.vpn_mode}</div><div class="p-actions"><button class="btn btn-accent" onclick="activateProfile('${esc(p.name)}')">Connect</button><button class="btn btn-ghost" onclick="deleteProfile('${esc(p.name)}')">Delete</button></div></div>`).join("")}catch(e){}
+// ============================================================
+// Profiles
+// ============================================================
+async function loadProfiles() {
+    try {
+        const r = await fetch("/api/profiles"); const d = await r.json();
+        const g = $("profilesGrid"); const ps = d.profiles || [];
+        if (!ps.length) { g.innerHTML = '<p style="color:var(--ink-faint);padding:14px 0;font-size:12px">No profiles yet.</p>'; return; }
+        g.innerHTML = ps.map(p => `<div class="p-card">
+            <div class="p-name">${esc(p.name)}</div>
+            <div class="p-detail">${esc(p.server)}<br>${p.vpn_mode} · socks :${p.socks_port||1080}</div>
+            <div class="p-actions">
+                <button class="btn btn-accent" onclick="activateProfile('${esc(p.name)}')">Connect</button>
+                <button class="btn btn-outline" onclick="deleteProfile('${esc(p.name)}')">Delete</button>
+            </div></div>`).join("");
+    } catch (e) {}
 }
-function showPF(){document.getElementById("pfForm").style.display="block";const sel=document.getElementById("pfServer");sel.innerHTML=[...allServers,...wgServers].map(s=>`<option value="${s.file}">${s.country} - ${s.city} (${s.protocol})</option>`).join("")}
-function hidePF(){document.getElementById("pfForm").style.display="none"}
-async function createProfile(){
-    const name=document.getElementById("pfName").value.trim(),server=document.getElementById("pfServer").value;
-    if(!name||!server){showToast("Name and server required","error");return}
-    try{const r=await fetch("/api/profiles",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,server,vpn_mode:server.endsWith(".conf")?"wireguard":"openvpn",socks_port:parseInt(document.getElementById("pfSP").value,10)||1080,http_port:parseInt(document.getElementById("pfHP").value,10)||8888})});const d=await r.json();if(d.ok){showToast("Created","success");hidePF();loadProfiles()}else showToast(d.error,"error")}catch(e){showToast("Failed","error")}
+function showPF() {
+    $("pfForm").style.display = "block";
+    $("pfServer").innerHTML = [...allServers, ...wgServers].map(s => `<option value="${s.file}">${s.country} — ${s.city} (${s.protocol})</option>`).join("");
 }
-async function activateProfile(name){
-    showOverlay("Activating profile...");startLogStream();
-    try{const r=await fetch("/api/profiles/activate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});const d=await r.json();stopLogStream();hideOverlay();d.ok?showToast(d.message,"success"):showToast(d.error||d.message,"error");fetchStatus()}catch(e){stopLogStream();hideOverlay();showToast("Failed","error")}
+function hidePF() { $("pfForm").style.display = "none"; }
+async function createProfile() {
+    const name = $("pfName").value.trim(), server = $("pfServer").value;
+    if (!name || !server) { showToast("Name and server required", "error"); return; }
+    try {
+        const res = await post("/api/profiles", {
+            name, server,
+            vpn_mode: server.endsWith(".conf") ? "wireguard" : "openvpn",
+            socks_port: parseInt($("pfSP").value, 10) || 1080,
+            http_port: parseInt($("pfHP").value, 10) || 8888,
+        });
+        if (res.data.ok) { showToast("Profile created", "success"); hidePF(); loadProfiles(); }
+        else showToast(res.data.error, "error");
+    } catch (e) { showToast("Failed", "error"); }
 }
-async function deleteProfile(name){try{await fetch("/api/profiles",{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});loadProfiles();showToast("Deleted","success")}catch(e){}}
+async function activateProfile(name) {
+    try { handleAsyncStart(await post("/api/profiles/activate", {name}), "Activating profile…"); } catch (e) { showToast("Failed", "error"); }
+}
+async function deleteProfile(name) {
+    try {
+        await fetch("/api/profiles", { method: "DELETE", headers: {"Content-Type":"application/json"}, body: JSON.stringify({name}) });
+        loadProfiles(); showToast("Profile deleted", "success");
+    } catch (e) {}
+}
 
-// -- Init --
-reqNotif();fetchServers();fetchStatus();fetchFavs();fetchRecent();loadSettings();
-setTimeout(fetchPingCache,3000);
-statusTimer=setInterval(fetchStatus,10000);
-bwTimer=setInterval(fetchBW,2000);
+// ============================================================
+// Misc
+// ============================================================
+function showToast(m, t) {
+    const el = $("toast"); el.textContent = m; el.className = "toast " + t + " visible";
+    clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove("visible"), 3800);
+}
+function reqNotif() { if ("Notification" in window && Notification.permission === "default") Notification.requestPermission(); }
+function notify(t, b) { if ("Notification" in window && Notification.permission === "granted") new Notification(t, { body: b }); }
+
+// ============================================================
+// Init
+// ============================================================
+reqNotif();
+fetchServers(); fetchStatus(); fetchFavs(); fetchRecent(); loadSettings();
+setTimeout(fetchPingCache, 2500);
+setInterval(fetchPingCache, 120000);
+schedulePoll(false);
+setInterval(fetchBW, 2500);
 </script>
 </body>
 </html>

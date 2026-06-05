@@ -9,7 +9,7 @@ Route specific app traffic (Telegram, browsers, torrent clients) through the VPN
 - **Dual VPN protocols** -- OpenVPN (UDP/TCP) and WireGuard
 - **SOCKS5 proxy** (default port 1080) -- for apps like Telegram, Firefox, etc.
 - **HTTP/HTTPS proxy** (default port 8888) -- powered by tinyproxy
-- **Web dashboard** at port 8080 with:
+- **Web dashboard** at port 8000 with:
   - Server browser with search, filter by protocol, and sort by name/country/latency/recent
   - One-click connect, disconnect, and random server selection
   - On-demand server ping with color-coded latency indicators
@@ -32,7 +32,7 @@ Docker Container (Alpine 3.20)
 +-- OpenVPN / WireGuard    (VPN tunnel)
 +-- microsocks             (SOCKS5 proxy on :1080)
 +-- tinyproxy              (HTTP proxy on :8888)
-+-- Flask app              (web dashboard on :8080)
++-- Flask app              (web dashboard on :8000)
 ```
 
 ## Quick Start
@@ -79,13 +79,13 @@ docker compose up -d --build
 
 ### 5. Open the dashboard
 
-Navigate to [http://localhost:8080](http://localhost:8080) -- select a server and connect.
+Navigate to [http://localhost:8000](http://localhost:8000) -- select a server and connect.
 
 ## Usage
 
 ### Web Dashboard
 
-Open `http://localhost:8080` to:
+Open `http://localhost:8000` to:
 
 - Browse and search servers by country/city
 - Switch between OpenVPN (UDP/TCP) and WireGuard
@@ -128,7 +128,7 @@ docker exec -it surfshark-vpn-proxy bash  # Shell into container
 
 ## API Reference
 
-All endpoints are served from the Flask app on port 8080.
+All endpoints are served from the Flask app on port 8000.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -170,7 +170,7 @@ Set in `docker-compose.yml`:
 
 | Port | Service |
 |------|---------|
-| 8080 | Web dashboard |
+| 8000 | Web dashboard |
 | 1080 | SOCKS5 proxy |
 | 8888 | HTTP/HTTPS proxy |
 
@@ -188,7 +188,7 @@ Set in `docker-compose.yml`:
 
 ### TLS handshake timeout
 
-OpenVPN may take 1-2 minutes to negotiate TLS with some servers. The dashboard waits up to 120 seconds. If it still fails, try a different server or switch to TCP protocol.
+Connections now run in the background — the dashboard stays responsive while OpenVPN negotiates (up to 75s, configurable via `OPENVPN_CONNECT_TIMEOUT`). Auth failures and DNS errors fail fast with a clear message instead of waiting for the timeout. If a server keeps failing, try a different one or switch to TCP protocol.
 
 ### WireGuard connection fails
 

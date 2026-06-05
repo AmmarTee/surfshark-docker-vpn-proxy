@@ -21,12 +21,12 @@ RUN apk add --no-cache \
     && rm -rf /tmp/microsocks \
     && apk del git build-base
 
-RUN pip3 install --no-cache-dir --break-system-packages flask
+RUN pip3 install --no-cache-dir --break-system-packages flask waitress
 
 COPY dashboard/ /app/
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-EXPOSE 1080 8080 8888
+EXPOSE 1080 8000 8888
 
 ENTRYPOINT ["/entrypoint.sh"]

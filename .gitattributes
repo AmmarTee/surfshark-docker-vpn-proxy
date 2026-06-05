@@ -1,0 +1,9 @@
+# Keep Linux-bound files LF even when checked out on Windows
+* text=auto
+*.sh text eol=lf
+*.py text eol=lf
+*.ovpn text eol=lf
+Wireguard/*.conf text eol=lf
+auth.txt text eol=lf
+wireguard.txt text eol=lf
+*.bat text eol=crlf

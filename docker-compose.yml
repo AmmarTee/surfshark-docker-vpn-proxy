@@ -11,7 +11,7 @@ services:
       - 8.8.8.8
     ports:
       - "1080:1080"
-      - "8080:8080"
+      - "8000:8000"
       - "8888:8888"
     volumes:
       - ./Open-vpn:/vpn/config:ro
@@ -21,7 +21,14 @@ services:
       - ./data:/vpn/data
     environment:
       - SOCKS_PORT=1080
+      # - LAN_NETWORK=192.168.1.0/24  # Set to your LAN subnet to keep dashboard reachable after VPN connects
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
     sysctls:
       - net.ipv6.conf.all.disable_ipv6=1
       - net.ipv4.conf.all.src_valid_mark=1

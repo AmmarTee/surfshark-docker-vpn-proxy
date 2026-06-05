@@ -2,7 +2,6 @@ import json
 import os
 import random
 import re
-import signal
 import subprocess
 import threading
 import time
@@ -17,6 +16,7 @@ app = Flask(__name__)
 # ---------------------------------------------------------------------------
 CONFIG_DIR = "/vpn/config"
 AUTH_FILE = "/vpn/auth.txt"
+AUTH_CLEAN = "/tmp/auth_clean.txt"
 ACTIVE_OVPN = "/tmp/active.ovpn"
 OPENVPN_LOG = "/var/log/openvpn.log"
 OPENVPN_PID = "/var/run/openvpn.pid"
@@ -30,8 +30,20 @@ DATA_DIR = "/vpn/data"
 AUTOSTART_FILE = "autostart.json"
 LAST_SUCCESS_FILE = "last_success.json"
 
+# Tunables (env-overridable)
+OPENVPN_CONNECT_TIMEOUT = int(os.environ.get("OPENVPN_CONNECT_TIMEOUT", "75"))
+WG_HANDSHAKE_TIMEOUT = int(os.environ.get("WG_HANDSHAKE_TIMEOUT", "15"))
+HEALTH_PROBE_INTERVAL = int(os.environ.get("HEALTH_PROBE_INTERVAL", "30"))
+HEALTH_PROBE_FAILS = int(os.environ.get("HEALTH_PROBE_FAILS", "2"))
+
+IP_CHECK_URLS = [
+    "https://api.ipify.org",
+    "https://ifconfig.me/ip",
+    "https://icanhazip.com",
+]
+
 # ---------------------------------------------------------------------------
-# Runtime state (guarded by vpn_lock)
+# Runtime state
 # ---------------------------------------------------------------------------
 SOCKS_PORT = int(os.environ.get("SOCKS_PORT", "1080"))
 SOCKS_BIND = os.environ.get("SOCKS_BIND", "0.0.0.0")
@@ -40,15 +52,39 @@ HTTP_PROXY_PORT = int(os.environ.get("HTTP_PORT", "8888"))
 HTTP_PROXY_BIND = os.environ.get("HTTP_BIND", "0.0.0.0")
 AUTO_RECONNECT = True
 
+# vpn_lock serializes all start/stop process manipulation.
 vpn_lock = threading.Lock()
-connected_since = None  # epoch timestamp when VPN connected
-_reconnecting = False
-_reconnect_attempts = 0
-_last_server_file = None  # last connected server filename
+connected_since = None
+_last_server_file = None  # last requested server filename
 _last_vpn_mode = None  # "openvpn" or "wireguard"
-_last_reconnect_reason = None
-_last_reconnect_error = None
-_last_action = "idle"
+
+# Operation state machine: idle | connecting | reconnecting | disconnecting
+_op_lock = threading.Lock()
+_op = {
+    "state": "idle",
+    "message": "",
+    "target": None,
+    "mode": None,
+    "attempt": 0,
+    "attempts_max": 0,
+    "reason": None,
+    "last_error": None,
+}
+# Set to ask an in-flight auto-reconnect loop to yield (user takeover).
+_cancel_event = threading.Event()
+
+# Managed child processes (owning the handle lets us reap them: no zombies,
+# no pgrep on every status poll).
+_proc_lock = threading.Lock()
+_openvpn_proc = None
+_socks_proc = None
+_tinyproxy_proc = None
+
+# Cached public IP — refreshed in the background, never in a request handler.
+_vpn_ip = {"ip": None, "ts": 0}
+
+# Event log (most recent last)
+_event_lock = threading.Lock()
 _event_log = []
 
 # Bandwidth tracking
@@ -59,10 +95,10 @@ _bw = {
     "last_time": 0,
 }
 
-# Ping cache: {filename: {latency_ms, reachable, timestamp}}
+# Ping cache: {filename: {host, latency_ms, reachable, timestamp}}
 _ping_cache = {}
 
-# Geo-IP cache: {ip: {data..., timestamp}}
+# Geo-IP cache: {ip: {data..., _ts}}
 _geoip_cache = {}
 
 FILENAME_RE = re.compile(r"^[a-z]{2}-[a-z]{3}\.prod\.surfshark\.com_(tcp|udp)\.ovpn$")
@@ -183,8 +219,11 @@ def parse_wg_files():
 
 
 # ===========================================================================
-# Persistent JSON helpers
+# Persistent JSON helpers (atomic writes, lock-guarded)
 # ===========================================================================
+
+_data_lock = threading.Lock()
+
 
 def _json_path(name):
     return os.path.join(DATA_DIR, name)
@@ -195,15 +234,22 @@ def load_json(name, default=None):
     try:
         with open(path) as f:
             return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
         return default if default is not None else []
 
 
 def save_json(name, data):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    path = _json_path(name)
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+    """Atomic write: temp file + rename so a crash never corrupts data."""
+    with _data_lock:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        path = _json_path(name)
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "w") as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp, path)
+        except OSError:
+            pass
 
 
 def _now_iso():
@@ -212,9 +258,38 @@ def _now_iso():
 
 def _add_event(kind, message):
     global _event_log
-    _event_log.append({"ts": _now_iso(), "kind": kind, "message": message})
-    _event_log = _event_log[-400:]
+    with _event_lock:
+        _event_log.append({"ts": _now_iso(), "kind": kind, "message": message})
+        _event_log = _event_log[-400:]
 
+
+def _get_events(limit):
+    with _event_lock:
+        return list(_event_log[-limit:])
+
+
+# ===========================================================================
+# Operation state machine
+# ===========================================================================
+
+def _set_op(**kw):
+    with _op_lock:
+        _op.update(kw)
+
+
+def _get_op():
+    with _op_lock:
+        return dict(_op)
+
+
+def _op_busy():
+    with _op_lock:
+        return _op["state"] != "idle"
+
+
+# ===========================================================================
+# Autostart / last-success persistence
+# ===========================================================================
 
 def _default_autostart_config():
     return {
@@ -265,127 +340,126 @@ def _mode_and_server_valid(vpn_mode, server_file):
     return bool(server_file and FILENAME_RE.match(server_file))
 
 
-def _attempt_connect(mode, server_file):
-    if mode == "wireguard":
-        return start_wireguard(server_file)
-    return start_vpn(server_file)
-
-
-def _pick_random_failover(mode):
-    if mode == "wireguard":
-        pool = parse_wg_files()
-    else:
-        pool = parse_ovpn_files()
-    if not pool:
-        return None
-    return random.choice(pool)["file"]
-
-
-def _run_reconnect_flow(mode, server_file, reason="monitor"):
-    global _reconnecting, _reconnect_attempts, _last_reconnect_reason, _last_reconnect_error, _last_action
-
-    cfg = _load_autostart_config()
-    retries = int(cfg.get("retry_count", 3))
-    retries = max(1, min(retries, 10))
-    retry_delay = int(cfg.get("retry_delay_sec", 5))
-    retry_delay = max(1, min(retry_delay, 60))
-    failover_scope = str(cfg.get("failover_scope", "global")).strip().lower()
-
-    _reconnecting = True
-    _reconnect_attempts = 0
-    _last_reconnect_reason = reason
-    _last_reconnect_error = None
-    _last_action = f"reconnecting:{reason}"
-    _add_event("reconnect", f"Reconnect started ({reason}) using {mode}:{server_file}")
-
-    ok = False
-    last_msg = "Reconnect failed"
-    try:
-        for attempt in range(retries):
-            _reconnect_attempts = attempt + 1
-            _add_event("reconnect", f"Attempt {_reconnect_attempts}/{retries} to {mode}:{server_file}")
-            with vpn_lock:
-                ok, last_msg = _attempt_connect(mode, server_file)
-            if ok:
-                _add_event("reconnect", f"Reconnect succeeded on attempt {_reconnect_attempts}")
-                _last_action = "connected"
-                return True, last_msg
-            _last_reconnect_error = last_msg
-            time.sleep(retry_delay)
-
-        if failover_scope == "none":
-            _add_event("reconnect", "Reconnect exhausted retries and failover is disabled")
-            _last_action = "reconnect_failed"
-            return False, last_msg
-
-        failover_mode = mode if failover_scope == "same_mode" else random.choice(["openvpn", "wireguard"])
-        failover_server = _pick_random_failover(failover_mode)
-        if not failover_server:
-            _add_event("reconnect", "Reconnect exhausted retries and no failover servers available")
-            _last_action = "reconnect_failed"
-            return False, last_msg
-
-        _add_event("reconnect", f"Failover to {failover_mode}:{failover_server}")
-        with vpn_lock:
-            ok, last_msg = _attempt_connect(failover_mode, failover_server)
-        if ok:
-            _add_event("reconnect", "Failover succeeded")
-            _last_action = "connected"
-            return True, last_msg
-        _last_reconnect_error = last_msg
-        _add_event("reconnect", f"Failover failed: {last_msg}")
-        _last_action = "reconnect_failed"
-        return False, last_msg
-    finally:
-        _reconnecting = False
-        _reconnect_attempts = 0
-
-
 # ===========================================================================
 # Process helpers
 # ===========================================================================
 
-def get_openvpn_pid():
-    try:
-        with open(OPENVPN_PID) as f:
-            pid = int(f.read().strip())
-        os.kill(pid, 0)
-        return pid
-    except (FileNotFoundError, ValueError, ProcessLookupError, PermissionError):
-        return None
+def _proc_alive(proc):
+    return proc is not None and proc.poll() is None
 
 
-def get_microsocks_pid():
+def _pgrep(name):
     try:
         result = subprocess.run(
-            ["pgrep", "-x", "microsocks"], capture_output=True, text=True, timeout=5
+            ["pgrep", "-x", name], capture_output=True, text=True, timeout=5
         )
         if result.stdout.strip():
             return int(result.stdout.strip().split("\n")[0])
-    except (subprocess.TimeoutExpired, ValueError):
+    except (subprocess.TimeoutExpired, ValueError, OSError):
         pass
     return None
 
 
-def get_tinyproxy_pid():
+def _openvpn_running():
+    with _proc_lock:
+        if _proc_alive(_openvpn_proc):
+            return True
+    # Fallback: stray process not owned by us (e.g. logic error / manual start)
+    return _pgrep("openvpn") is not None
+
+
+def _socks_running():
+    with _proc_lock:
+        if _proc_alive(_socks_proc):
+            return True
+    return _pgrep("microsocks") is not None
+
+
+def _tinyproxy_running():
+    with _proc_lock:
+        if _proc_alive(_tinyproxy_proc):
+            return True
+    return _pgrep("tinyproxy") is not None
+
+
+def _terminate(proc, name, timeout=8):
+    """Terminate a managed child and reap it. SIGKILL as last resort."""
+    if proc is None:
+        return
     try:
-        result = subprocess.run(
-            ["pgrep", "-x", "tinyproxy"], capture_output=True, text=True, timeout=5
-        )
-        if result.stdout.strip():
-            return int(result.stdout.strip().split("\n")[0])
-    except (subprocess.TimeoutExpired, ValueError):
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    pass
+        else:
+            proc.wait()
+    except OSError:
+        pass
+
+
+def _kill_strays(name):
+    """Kill processes we don't own a handle for (stale from a crash)."""
+    try:
+        subprocess.run(["pkill", "-x", name], capture_output=True, timeout=5)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+
+# ===========================================================================
+# Credentials (handles CRLF / BOM / stray whitespace from Windows hosts)
+# ===========================================================================
+
+def _prepare_auth_file():
+    """Sanitize auth.txt into a private temp copy OpenVPN can use.
+
+    The mounted file frequently has CRLF line endings (Windows host) which
+    makes OpenVPN send 'password\\r' and fail auth intermittently. It is also
+    mounted read-only so chmod 600 on it never works.
+    """
+    try:
+        with open(AUTH_FILE, encoding="utf-8-sig") as f:
+            lines = [ln.strip() for ln in f.read().splitlines()]
+    except OSError as e:
+        return None, f"Cannot read credentials file: {e}"
+    lines = [ln for ln in lines if ln]
+    if len(lines) < 2:
+        return None, "auth.txt must contain username on line 1 and password on line 2"
+    try:
+        fd = os.open(AUTH_CLEAN, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(lines[0] + "\n" + lines[1] + "\n")
+    except OSError as e:
+        return None, f"Cannot write sanitized credentials: {e}"
+    return AUTH_CLEAN, None
+
+
+def _read_wg_private_key():
+    """WireGuard private key from wireguard.txt line 2 (CRLF-safe)."""
+    try:
+        with open(WG_KEY_FILE, encoding="utf-8-sig") as f:
+            lines = [ln.strip() for ln in f.read().splitlines() if ln.strip()]
+        if len(lines) >= 2:
+            return lines[1]
+    except OSError:
         pass
     return None
 
 
-# Default DNS servers (Surfshark + Cloudflare fallback)
+# ===========================================================================
+# DNS management
+# ===========================================================================
+
 _DEFAULT_VPN_DNS = ["162.252.172.57", "149.154.159.92"]
 _ORIGINAL_RESOLV = None
 
 
 def _set_vpn_dns(dns_servers=None):
-    """Write VPN DNS servers to /etc/resolv.conf, backing up the original."""
     global _ORIGINAL_RESOLV
     if _ORIGINAL_RESOLV is None:
         try:
@@ -394,13 +468,15 @@ def _set_vpn_dns(dns_servers=None):
         except OSError:
             _ORIGINAL_RESOLV = ""
     servers = dns_servers if dns_servers else _DEFAULT_VPN_DNS
-    with open("/etc/resolv.conf", "w") as f:
-        for s in servers:
-            f.write(f"nameserver {s}\n")
+    try:
+        with open("/etc/resolv.conf", "w") as f:
+            for s in servers:
+                f.write(f"nameserver {s}\n")
+    except OSError:
+        pass
 
 
 def _restore_dns():
-    """Restore original /etc/resolv.conf after VPN disconnect."""
     global _ORIGINAL_RESOLV
     if _ORIGINAL_RESOLV is not None:
         try:
@@ -411,6 +487,10 @@ def _restore_dns():
         _ORIGINAL_RESOLV = None
 
 
+# ===========================================================================
+# Networking helpers
+# ===========================================================================
+
 def _interface_alive(iface):
     try:
         r = subprocess.run(
@@ -418,12 +498,138 @@ def _interface_alive(iface):
             capture_output=True, text=True, timeout=5,
         )
         return r.returncode == 0
-    except subprocess.TimeoutExpired:
+    except (subprocess.TimeoutExpired, OSError):
         return False
 
 
+# The container's real gateway, recorded before any VPN touches routing.
+_orig_gateway = {"via": None, "dev": None}
+
+# Endpoint /32 host routes we added for WireGuard (cleaned up on stop so
+# they don't accumulate across reconnects).
+_endpoint_routes = set()
+
+
+def _record_original_gateway():
+    try:
+        rt = subprocess.run(
+            ["ip", "route", "show", "default"],
+            capture_output=True, text=True, timeout=5,
+        )
+        m = re.search(r"default via (\S+) dev (\S+)", rt.stdout)
+        if m and "tun" not in m.group(2) and m.group(2) != WG_INTERFACE:
+            _orig_gateway["via"] = m.group(1)
+            _orig_gateway["dev"] = m.group(2)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+
+def _ensure_default_route():
+    """If the default route vanished (e.g. wg0 was torn down and took the
+    route with it), restore it via the original container gateway. Without
+    this, a failed tunnel leaves the container with no connectivity at all
+    and every subsequent reconnect attempt dies on DNS resolution."""
+    if not _orig_gateway["via"]:
+        return
+    try:
+        rt = subprocess.run(
+            ["ip", "route", "show", "default"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if "default" in rt.stdout:
+            return
+        subprocess.run(
+            ["ip", "route", "add", "default", "via", _orig_gateway["via"],
+             "dev", _orig_gateway["dev"]],
+            capture_output=True, text=True, timeout=5,
+        )
+        _add_event("route", f"Restored default route via {_orig_gateway['via']}")
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+
+def _probe_connectivity(timeout=5):
+    """Fetch the public IP through the tunnel. Returns IP or None.
+
+    This is the real health check: an interface can be 'up' while the
+    tunnel is dead (ping-restart 0 in Surfshark configs means OpenVPN
+    never notices on its own).
+    """
+    for url in IP_CHECK_URLS:
+        try:
+            r = subprocess.run(
+                ["curl", "-s", "--max-time", str(timeout), url],
+                capture_output=True, text=True, timeout=timeout + 2,
+            )
+            ip = r.stdout.strip()
+            if r.returncode == 0 and re.match(r"^\d{1,3}(\.\d{1,3}){3}$", ip):
+                return ip
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+    return None
+
+
+def _refresh_vpn_ip_async():
+    """Refresh the cached public IP without blocking the caller."""
+    def work():
+        ip = _probe_connectivity()
+        if ip:
+            _vpn_ip["ip"] = ip
+            _vpn_ip["ts"] = time.time()
+    threading.Thread(target=work, daemon=True).start()
+
+
+def _preserve_lan_routes():
+    """Pin routes for LAN/Docker subnets so the dashboard stays reachable
+    after the VPN takes over the default route."""
+    try:
+        rt = subprocess.run(
+            ["ip", "route", "show", "default"],
+            capture_output=True, text=True, timeout=5,
+        )
+        gw_match = re.search(r"default via (\S+) dev (\S+)", rt.stdout)
+        if not gw_match:
+            return
+        gateway = gw_match.group(1)
+        gw_dev = gw_match.group(2)
+
+        lan_env = os.environ.get("LAN_NETWORK", "").strip()
+        if lan_env:
+            subnets = [s.strip() for s in lan_env.split(",") if s.strip()]
+        else:
+            addr = subprocess.run(
+                ["ip", "-o", "-4", "addr", "show", "dev", gw_dev],
+                capture_output=True, text=True, timeout=5,
+            )
+            subnets = []
+            for line in addr.stdout.splitlines():
+                m = re.search(r"inet (\d+\.\d+\.\d+\.\d+/\d+)", line)
+                if m:
+                    ip_part, prefix = m.group(1).split("/")
+                    prefix_int = int(prefix)
+                    octets = list(map(int, ip_part.split(".")))
+                    mask = (0xFFFFFFFF << (32 - prefix_int)) & 0xFFFFFFFF
+                    net = [
+                        octets[0] & (mask >> 24 & 0xFF),
+                        octets[1] & (mask >> 16 & 0xFF),
+                        octets[2] & (mask >> 8 & 0xFF),
+                        octets[3] & (mask & 0xFF),
+                    ]
+                    subnets.append(f"{net[0]}.{net[1]}.{net[2]}.{net[3]}/{prefix}")
+
+        for subnet in subnets:
+            subprocess.run(
+                ["ip", "route", "add", subnet, "via", gateway, "dev", gw_dev],
+                capture_output=True, text=True, timeout=5,
+            )
+        if subnets:
+            _add_event("route", f"Preserved LAN routes: {', '.join(subnets)} via {gateway}")
+    except Exception as e:
+        _add_event("route", f"LAN route preservation warning: {e}")
+
+
 # ===========================================================================
-# Tinyproxy management
+# Proxy management (microsocks + tinyproxy)
 # ===========================================================================
 
 TINYPROXY_CONF = "/etc/tinyproxy/tinyproxy.conf"
@@ -442,56 +648,74 @@ def _write_tinyproxy_conf():
         )
 
 
+def start_socks():
+    global _socks_proc
+    with _proc_lock:
+        if _proc_alive(_socks_proc):
+            return
+        _kill_strays("microsocks")
+        _add_event("proxy", f"Starting microsocks at {SOCKS_BIND}:{SOCKS_PORT}")
+        _socks_proc = subprocess.Popen(
+            ["microsocks", "-i", SOCKS_BIND, "-p", str(SOCKS_PORT)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+
+
+def stop_socks():
+    global _socks_proc
+    with _proc_lock:
+        _terminate(_socks_proc, "microsocks")
+        _socks_proc = None
+        _kill_strays("microsocks")
+
+
 def start_tinyproxy():
+    global _tinyproxy_proc
     if not HTTP_PROXY_ENABLED:
         return
-    stop_tinyproxy()
-    _write_tinyproxy_conf()
-    subprocess.Popen(
-        ["tinyproxy", "-c", TINYPROXY_CONF],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    with _proc_lock:
+        if _proc_alive(_tinyproxy_proc):
+            return
+        _kill_strays("tinyproxy")
+        _write_tinyproxy_conf()
+        _add_event("proxy", f"Starting tinyproxy at {HTTP_PROXY_BIND}:{HTTP_PROXY_PORT}")
+        # -d keeps it in the foreground so we own (and can reap) the process
+        _tinyproxy_proc = subprocess.Popen(
+            ["tinyproxy", "-d", "-c", TINYPROXY_CONF],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
 
 
 def stop_tinyproxy():
-    pid = get_tinyproxy_pid()
-    if pid:
-        try:
-            os.kill(pid, signal.SIGTERM)
-            time.sleep(0.3)
-        except ProcessLookupError:
-            pass
+    global _tinyproxy_proc
+    with _proc_lock:
+        _terminate(_tinyproxy_proc, "tinyproxy")
+        _tinyproxy_proc = None
+        _kill_strays("tinyproxy")
+
+
+def _ensure_proxies():
+    """Start any proxy that should be running but isn't. Idempotent."""
+    if not _socks_running():
+        start_socks()
+    if HTTP_PROXY_ENABLED and not _tinyproxy_running():
+        start_tinyproxy()
 
 
 # ===========================================================================
 # VPN status
 # ===========================================================================
 
-def get_vpn_status():
-    vpn_mode = "openvpn"
+def _read_mode_file():
     try:
         with open(VPN_MODE_FILE) as f:
-            vpn_mode = f.read().strip() or "openvpn"
-    except FileNotFoundError:
-        pass
+            return f.read().strip() or None
+    except OSError:
+        return None
 
-    connected = False
-    current_server = None
-    vpn_ip = None
 
+def _current_server_name(vpn_mode):
     if vpn_mode == "wireguard":
-        if _interface_alive(WG_INTERFACE):
-            connected = True
-        if connected:
-            try:
-                result = subprocess.run(
-                    ["curl", "-s", "--max-time", "5", "https://api.ipify.org"],
-                    capture_output=True, text=True, timeout=10,
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    vpn_ip = result.stdout.strip()
-            except subprocess.TimeoutExpired:
-                pass
         if os.path.exists(WG_CONF):
             try:
                 with open(WG_CONF) as f:
@@ -499,23 +723,10 @@ def get_vpn_status():
                         if line.strip().startswith("Endpoint"):
                             parts = line.split("=", 1)
                             if len(parts) == 2:
-                                current_server = parts[1].strip().split(":")[0]
-                            break
+                                return parts[1].strip().split(":")[0]
             except OSError:
                 pass
     else:
-        pid = get_openvpn_pid()
-        if pid and _interface_alive("tun0"):
-            connected = True
-            try:
-                result = subprocess.run(
-                    ["curl", "-s", "--max-time", "5", "https://api.ipify.org"],
-                    capture_output=True, text=True, timeout=10,
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    vpn_ip = result.stdout.strip()
-            except subprocess.TimeoutExpired:
-                pass
         if os.path.exists(ACTIVE_OVPN):
             try:
                 with open(ACTIVE_OVPN) as f:
@@ -523,70 +734,109 @@ def get_vpn_status():
                         if line.startswith("remote "):
                             parts = line.strip().split()
                             if len(parts) >= 2:
-                                current_server = parts[1]
-                            break
+                                return parts[1]
             except OSError:
                 pass
+    return None
 
+
+def get_vpn_status():
+    """Fast, non-blocking snapshot. No network calls here — the public IP
+    comes from the background-refreshed cache."""
+    vpn_mode = _read_mode_file() or "openvpn"
+
+    if vpn_mode == "wireguard":
+        connected = _interface_alive(WG_INTERFACE)
+    else:
+        connected = _openvpn_running() and _interface_alive("tun0")
+
+    op = _get_op()
     return {
         "connected": connected,
         "vpn_mode": vpn_mode,
-        "openvpn_running": get_openvpn_pid() is not None,
-        "socks_running": get_microsocks_pid() is not None,
-        "current_server": current_server,
-        "vpn_ip": vpn_ip,
+        "openvpn_running": _openvpn_running(),
+        "socks_running": _socks_running(),
+        "current_server": _current_server_name(vpn_mode) if connected else None,
+        "vpn_ip": _vpn_ip["ip"] if connected else None,
         "socks_port": SOCKS_PORT,
         "socks_bind": SOCKS_BIND,
         "http_proxy_enabled": HTTP_PROXY_ENABLED,
         "http_proxy_port": HTTP_PROXY_PORT,
         "http_proxy_bind": HTTP_PROXY_BIND,
-        "http_proxy_running": get_tinyproxy_pid() is not None,
+        "http_proxy_running": _tinyproxy_running(),
         "auto_reconnect": AUTO_RECONNECT,
-        "reconnecting": _reconnecting,
-        "reconnect_attempts": _reconnect_attempts,
-        "last_reconnect_reason": _last_reconnect_reason,
-        "last_reconnect_error": _last_reconnect_error,
-        "last_action": _last_action,
-        "connected_since": connected_since,
+        "connected_since": connected_since if connected else None,
+        # Operation state for the non-blocking UI
+        "op_state": op["state"],
+        "op_message": op["message"],
+        "op_target": op["target"],
+        "op_mode": op["mode"],
+        "op_attempt": op["attempt"],
+        "op_attempts_max": op["attempts_max"],
+        "op_reason": op["reason"],
+        "last_error": op["last_error"],
+        # Legacy aliases (kept for compatibility)
+        "reconnecting": op["state"] == "reconnecting",
+        "reconnect_attempts": op["attempt"],
+        "last_reconnect_reason": op["reason"],
+        "last_reconnect_error": op["last_error"],
+        "last_action": op["state"],
     }
 
 
 def read_log(lines=50):
-    """Read last N lines of the OpenVPN log."""
     try:
         with open(OPENVPN_LOG) as f:
             all_lines = f.readlines()
             return "".join(all_lines[-lines:])
-    except FileNotFoundError:
+    except OSError:
         return "No log file yet."
 
 
-def stop_vpn():
-    """Stop OpenVPN, WireGuard, tinyproxy and microsocks."""
-    global connected_since, _last_action
-    _last_action = "disconnecting"
-    _add_event("control", "Stopping VPN and proxies")
-    pid = get_openvpn_pid()
-    if pid:
-        try:
-            os.kill(pid, signal.SIGTERM)
-            for _ in range(10):
-                try:
-                    os.kill(pid, 0)
-                    time.sleep(0.5)
-                except ProcessLookupError:
-                    break
-        except ProcessLookupError:
-            pass
+def read_wg_log(lines=50):
+    log_content = ""
+    try:
+        with open(WG_LOG) as f:
+            all_lines = f.readlines()
+            log_content = "".join(all_lines[-lines:])
+    except OSError:
+        log_content = "No WireGuard log yet.\n"
 
-    # Stop WireGuard
+    try:
+        result = subprocess.run(
+            ["wg", "show"], capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            log_content += "\n--- WireGuard Interface Status ---\n"
+            log_content += result.stdout
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+
+    return log_content
+
+
+# ===========================================================================
+# Connect / disconnect core (always called with vpn_lock held)
+# ===========================================================================
+
+def stop_vpn():
+    """Stop OpenVPN, WireGuard, and both proxies."""
+    global connected_since, _openvpn_proc
+    _add_event("control", "Stopping VPN and proxies")
+
+    with _proc_lock:
+        _terminate(_openvpn_proc, "openvpn")
+        _openvpn_proc = None
+    _kill_strays("openvpn")
+
+    # Tear down WireGuard and restore the default route it replaced
     try:
         route_info = subprocess.run(
-            ["ip", "route", "show", "default"], capture_output=True, text=True
+            ["ip", "route", "show", "default"], capture_output=True, text=True, timeout=5
         )
         if WG_INTERFACE in route_info.stdout:
             all_routes = subprocess.run(
-                ["ip", "route"], capture_output=True, text=True
+                ["ip", "route"], capture_output=True, text=True, timeout=5
             )
             for line in all_routes.stdout.splitlines():
                 if "via" in line and WG_INTERFACE not in line:
@@ -594,88 +844,113 @@ def stop_vpn():
                     if m:
                         gateway = m.group(1)
                         subprocess.run(["ip", "route", "del", "default"],
-                                       capture_output=True, text=True)
+                                       capture_output=True, text=True, timeout=5)
                         subprocess.run(["ip", "route", "add", "default", "via", gateway],
-                                       capture_output=True, text=True)
+                                       capture_output=True, text=True, timeout=5)
                         break
         subprocess.run(
             ["wg-quick", "down", WG_INTERFACE],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=15,
         )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
 
-    # Stop proxies
-    socks_pid = get_microsocks_pid()
-    if socks_pid:
+    # Remove stale endpoint host routes from previous WG sessions
+    for ep in list(_endpoint_routes):
         try:
-            os.kill(socks_pid, signal.SIGTERM)
-        except ProcessLookupError:
+            subprocess.run(["ip", "route", "del", ep],
+                           capture_output=True, text=True, timeout=5)
+        except (subprocess.TimeoutExpired, OSError):
             pass
+        _endpoint_routes.discard(ep)
+
+    stop_socks()
     stop_tinyproxy()
 
     connected_since = None
-    _last_action = "disconnected"
+    _vpn_ip["ip"] = None
     _restore_dns()
+    _ensure_default_route()
     for fpath in [OPENVPN_PID, VPN_MODE_FILE]:
         try:
             os.remove(fpath)
-        except FileNotFoundError:
+        except OSError:
             pass
 
 
-def _start_proxies():
-    """Start SOCKS5 and HTTP proxies if not already running."""
-    if not get_microsocks_pid():
-        _add_event("proxy", f"Starting microsocks at {SOCKS_BIND}:{SOCKS_PORT}")
-        subprocess.Popen(
-            ["microsocks", "-i", SOCKS_BIND, "-p", str(SOCKS_PORT)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-    if HTTP_PROXY_ENABLED and not get_tinyproxy_pid():
-        _add_event("proxy", f"Starting tinyproxy at {HTTP_PROXY_BIND}:{HTTP_PROXY_PORT}")
-        start_tinyproxy()
-
-
-def _add_recent(server_file, vpn_mode, vpn_ip=None):
-    """Log a successful connection to recent.json."""
+def _on_connected(server_file, vpn_mode):
+    """Common post-connect bookkeeping."""
+    global connected_since, _last_server_file, _last_vpn_mode
+    with open(VPN_MODE_FILE, "w") as f:
+        f.write(vpn_mode)
+    connected_since = time.time()
+    _last_server_file = server_file
+    _last_vpn_mode = vpn_mode
+    _ensure_proxies()
     recent = load_json("recent.json", [])
     entry = {
         "file": server_file,
         "vpn_mode": vpn_mode,
-        "vpn_ip": vpn_ip,
+        "vpn_ip": _vpn_ip["ip"],
         "timestamp": time.time(),
     }
     recent = [r for r in recent if r.get("file") != server_file]
     recent.insert(0, entry)
-    recent = recent[:20]
-    save_json("recent.json", recent)
+    save_json("recent.json", recent[:20])
+    _save_last_success(server_file, vpn_mode, _vpn_ip["ip"])
+    _refresh_vpn_ip_async()
+
+
+# Log lines that mean "give up now, retrying won't help this attempt"
+_OVPN_FATAL_PATTERNS = [
+    ("AUTH_FAILED", "Authentication failed — check the credentials in auth.txt"),
+    ("auth-failure", "Authentication failed — check the credentials in auth.txt"),
+    ("Cannot resolve host address", "Cannot resolve the server hostname (DNS problem)"),
+    ("private key password verification failed", "Private key verification failed"),
+]
+
+
+def _scan_ovpn_log_for_fatal():
+    try:
+        with open(OPENVPN_LOG) as f:
+            tail = f.read()[-8000:]
+    except OSError:
+        return None
+    for needle, message in _OVPN_FATAL_PATTERNS:
+        if needle in tail:
+            return message
+    return None
 
 
 def start_vpn(config_file):
-    """Start OpenVPN with the given config file and proxies."""
-    global connected_since, _last_server_file, _last_vpn_mode, _last_action
+    """Start OpenVPN with the given config. Blocking — run from a worker."""
+    global _openvpn_proc
     config_path = os.path.join(CONFIG_DIR, config_file)
     if not os.path.exists(config_path):
         return False, f"Config file not found: {config_file}"
-    if not os.path.exists(AUTH_FILE):
-        return False, "Credentials file (auth.txt) not found"
 
-    _last_action = "connecting_openvpn"
+    auth_path, auth_err = _prepare_auth_file()
+    if auth_err:
+        return False, auth_err
+
     _add_event("connect", f"OpenVPN connect requested: {config_file}")
-
     stop_vpn()
-    time.sleep(1)
-
-    # Fix auth.txt permissions so OpenVPN doesn't warn/reject
-    try:
-        os.chmod(AUTH_FILE, 0o600)
-    except OSError:
-        pass
+    time.sleep(0.5)
+    _ensure_default_route()
+    _preserve_lan_routes()
 
     with open(config_path) as src:
         content = src.read()
-    content = re.sub(r"^auth-user-pass.*$", f"auth-user-pass {AUTH_FILE}", content, flags=re.MULTILINE)
+    # Normalize CRLF configs (added from a Windows host) and wire in auth
+    content = content.replace("\r\n", "\n").replace("\r", "\n")
+    if re.search(r"^auth-user-pass", content, flags=re.MULTILINE):
+        content = re.sub(r"^auth-user-pass.*$", f"auth-user-pass {auth_path}",
+                         content, flags=re.MULTILINE)
+    else:
+        content += f"\nauth-user-pass {auth_path}\n"
+    # Surfshark ships 'ping-restart 0' which disables dead-tunnel detection;
+    # strip it — we override with sane keepalive flags below.
+    content = re.sub(r"^ping-restart.*$", "", content, flags=re.MULTILINE)
     with open(ACTIVE_OVPN, "w") as dst:
         dst.write(content)
 
@@ -690,63 +965,68 @@ def start_vpn(config_file):
             "--data-ciphers", "AES-256-CBC:AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305",
             "--data-ciphers-fallback", "AES-256-CBC",
             "--auth-nocache",
+            "--auth-retry", "none",
+            "--connect-retry", "2",
+            "--connect-retry-max", "3",
+            "--resolv-retry", "15",
+            # Detect and survive dead tunnels without dropping tun0
+            "--ping", "15",
+            "--ping-restart", "60",
+            "--persist-tun",
+            "--persist-key",
         ],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
+    with _proc_lock:
+        _openvpn_proc = proc
 
-    # Wait up to 120s: TLS negotiation can take multiple 60s retry cycles
-    for _ in range(120):
+    deadline = time.time() + OPENVPN_CONNECT_TIMEOUT
+    while time.time() < deadline:
         if _interface_alive("tun0"):
-            with open(VPN_MODE_FILE, "w") as f:
-                f.write("openvpn")
-            _set_vpn_dns()  # Set DNS for tunnel
-            connected_since = time.time()
-            _last_server_file = config_file
-            _last_vpn_mode = "openvpn"
-            _start_proxies()
-            _add_recent(config_file, "openvpn")
-            _save_last_success(config_file, "openvpn")
-            _last_action = "connected"
+            _set_vpn_dns()
+            _on_connected(config_file, "openvpn")
             _add_event("connect", f"OpenVPN connected: {config_file}")
             return True, "VPN connected successfully"
-        # Fast-fail if openvpn process died
+        # Fast-fail on fatal errors instead of burning the full timeout
+        fatal = _scan_ovpn_log_for_fatal()
+        if fatal:
+            _add_event("connect", f"OpenVPN fatal: {fatal}")
+            with _proc_lock:
+                _terminate(_openvpn_proc, "openvpn", timeout=5)
+                _openvpn_proc = None
+            return False, fatal
         if proc.poll() is not None:
-            _last_action = "connect_failed"
-            _add_event("connect", "OpenVPN process exited unexpectedly")
-            return False, "OpenVPN process exited unexpectedly. Check logs."
-        time.sleep(1)
+            fatal = _scan_ovpn_log_for_fatal()
+            msg = fatal or "OpenVPN process exited unexpectedly. Check logs."
+            _add_event("connect", f"OpenVPN exited: {msg}")
+            return False, msg
+        time.sleep(0.5)
 
-    _last_action = "connect_failed"
     _add_event("connect", "OpenVPN tunnel failed to establish in time")
-    return False, "VPN tunnel failed to establish within 120 seconds. Check logs."
+    with _proc_lock:
+        _terminate(_openvpn_proc, "openvpn", timeout=5)
+        _openvpn_proc = None
+    return False, f"VPN tunnel failed to establish within {OPENVPN_CONNECT_TIMEOUT}s. Check logs."
 
 
 def start_wireguard(config_file):
-    """Start WireGuard with the given config file and proxies."""
-    global connected_since, _last_server_file, _last_vpn_mode, _last_action
+    """Start WireGuard with the given config. Blocking — run from a worker."""
     config_path = os.path.join(WG_CONFIG_DIR, config_file)
     if not os.path.exists(config_path):
         return False, f"Config file not found: {config_file}"
 
-    _last_action = "connecting_wireguard"
     _add_event("connect", f"WireGuard connect requested: {config_file}")
-
     stop_vpn()
-    time.sleep(1)
+    time.sleep(0.5)
+    _ensure_default_route()
+    _preserve_lan_routes()
 
-    wg_private_key = None
-    if os.path.exists(WG_KEY_FILE):
-        try:
-            with open(WG_KEY_FILE) as f:
-                lines = f.read().strip().splitlines()
-                if len(lines) >= 2:
-                    wg_private_key = lines[1].strip()
-        except OSError:
-            pass
+    wg_private_key = _read_wg_private_key()
 
     os.makedirs("/etc/wireguard", exist_ok=True)
     with open(config_path) as src:
         content = src.read()
+    content = content.replace("\r\n", "\n").replace("\r", "\n")
     if wg_private_key:
         content = re.sub(
             r"^PrivateKey\s*=\s*.*$",
@@ -774,7 +1054,6 @@ def start_wireguard(config_file):
             capture_output=True, text=True, timeout=30,
         )
     except subprocess.TimeoutExpired:
-        _last_action = "connect_failed"
         _add_event("connect", "WireGuard timed out")
         return False, "WireGuard connection timed out"
 
@@ -787,74 +1066,224 @@ def start_wireguard(config_file):
         logf.write("\n")
 
     if result.returncode != 0:
-        _last_action = "connect_failed"
         _add_event("connect", f"WireGuard failed: {result.stderr.strip()}")
         return False, f"WireGuard failed: {result.stderr.strip()}"
 
-    # Manual routing
+    # Manual routing: endpoint via real gateway, everything else via wg0
     try:
         route_info = subprocess.run(
-            ["ip", "route", "show", "default"], capture_output=True, text=True
+            ["ip", "route", "show", "default"], capture_output=True, text=True, timeout=5
         )
         gw_match = re.search(r"default via (\S+)", route_info.stdout)
         if gw_match:
             gateway = gw_match.group(1)
             endpoint_info = subprocess.run(
                 ["wg", "show", WG_INTERFACE, "endpoints"],
-                capture_output=True, text=True,
+                capture_output=True, text=True, timeout=5,
             )
             ep_match = re.search(r"(\d+\.\d+\.\d+\.\d+):\d+", endpoint_info.stdout)
             if ep_match:
                 endpoint_ip = ep_match.group(1)
                 subprocess.run(["ip", "route", "add", endpoint_ip, "via", gateway],
-                               capture_output=True, text=True)
+                               capture_output=True, text=True, timeout=5)
+                _endpoint_routes.add(endpoint_ip)
             subprocess.run(["ip", "route", "del", "default"],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, timeout=5)
             subprocess.run(["ip", "route", "add", "default", "dev", WG_INTERFACE],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, timeout=5)
             with open(WG_LOG, "a") as logf:
                 logf.write(f"[{timestamp}] Routing configured via {WG_INTERFACE}\n")
     except Exception as e:
         with open(WG_LOG, "a") as logf:
             logf.write(f"[{timestamp}] Routing warning: {e}\n")
 
-    # Set DNS so name resolution works through the tunnel
     _set_vpn_dns(wg_dns_servers)
 
-    with open(VPN_MODE_FILE, "w") as f:
-        f.write("wireguard")
-    connected_since = time.time()
-    _last_server_file = config_file
-    _last_vpn_mode = "wireguard"
-    _start_proxies()
-    _add_recent(config_file, "wireguard")
-    _save_last_success(config_file, "wireguard")
-    _last_action = "connected"
+    # WireGuard is connectionless: wg-quick succeeds even with a bad key or
+    # dead server. Verify a handshake actually completes before reporting OK.
+    handshake_ok = False
+    probe_ip = None
+    deadline = time.time() + WG_HANDSHAKE_TIMEOUT
+    # A probe generates traffic, which is what triggers the handshake
+    probe_ip = _probe_connectivity(timeout=4)
+    while time.time() < deadline:
+        try:
+            hs = subprocess.run(
+                ["wg", "show", WG_INTERFACE, "latest-handshakes"],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in hs.stdout.splitlines():
+                parts = line.split()
+                if parts and parts[-1].isdigit() and int(parts[-1]) > 0:
+                    handshake_ok = True
+                    break
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        if handshake_ok:
+            break
+        time.sleep(1)
+
+    if not handshake_ok:
+        _add_event("connect", f"WireGuard handshake never completed: {config_file}")
+        subprocess.run(["wg-quick", "down", WG_INTERFACE],
+                       capture_output=True, text=True, timeout=15)
+        _restore_dns()
+        return False, "WireGuard handshake failed — check your key in wireguard.txt or try another server"
+
+    if probe_ip:
+        _vpn_ip["ip"] = probe_ip
+        _vpn_ip["ts"] = time.time()
+
+    _on_connected(config_file, "wireguard")
     _add_event("connect", f"WireGuard connected: {config_file}")
     return True, "WireGuard connected successfully"
 
 
-def read_wg_log(lines=50):
-    """Read WireGuard log and append live interface status."""
-    log_content = ""
-    try:
-        with open(WG_LOG) as f:
-            all_lines = f.readlines()
-            log_content = "".join(all_lines[-lines:])
-    except FileNotFoundError:
-        log_content = "No WireGuard log yet.\n"
+def _attempt_connect(mode, server_file):
+    if mode == "wireguard":
+        return start_wireguard(server_file)
+    return start_vpn(server_file)
 
-    try:
-        result = subprocess.run(
-            ["wg", "show"], capture_output=True, text=True, timeout=5
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            log_content += "\n--- WireGuard Interface Status ---\n"
-            log_content += result.stdout
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
 
-    return log_content
+def _pick_random_failover(mode):
+    pool = parse_wg_files() if mode == "wireguard" else parse_ovpn_files()
+    if not pool:
+        return None
+    return random.choice(pool)["file"]
+
+
+# ===========================================================================
+# Async operation runners (everything network-heavy happens off-request)
+# ===========================================================================
+
+def request_connect(mode, server_file, source="user"):
+    """Kick off a connection in the background. Returns (accepted, message)."""
+    op = _get_op()
+    if op["state"] in ("connecting", "disconnecting"):
+        return False, f"Busy: {op['state']} {op['target'] or ''}".strip()
+    if op["state"] == "reconnecting":
+        if source != "user":
+            return False, "Busy: auto-reconnect in progress"
+        # User takes priority: ask the reconnect loop to yield
+        _cancel_event.set()
+
+    _set_op(state="connecting", target=server_file, mode=mode,
+            message=f"Connecting to {server_file}...", attempt=1,
+            attempts_max=1, reason=source, last_error=None)
+
+    def worker():
+        try:
+            with vpn_lock:
+                ok, msg = _attempt_connect(mode, server_file)
+            if ok:
+                _set_op(state="idle", message=msg, attempt=0, last_error=None)
+            else:
+                _set_op(state="idle", message=msg, attempt=0, last_error=msg)
+        except Exception as e:
+            _set_op(state="idle", message=str(e), attempt=0, last_error=str(e))
+
+    threading.Thread(target=worker, daemon=True).start()
+    return True, "Connection started"
+
+
+def request_disconnect():
+    op = _get_op()
+    if op["state"] == "disconnecting":
+        return False, "Already disconnecting"
+    if op["state"] == "reconnecting":
+        _cancel_event.set()
+    _set_op(state="disconnecting", message="Disconnecting...", target=None,
+            mode=None, attempt=0, reason="user")
+
+    def worker():
+        try:
+            with vpn_lock:
+                stop_vpn()
+            _set_op(state="idle", message="Disconnected", last_error=None)
+            _add_event("control", "Disconnected by user")
+        except Exception as e:
+            _set_op(state="idle", message=str(e), last_error=str(e))
+
+    threading.Thread(target=worker, daemon=True).start()
+    return True, "Disconnecting"
+
+
+def _run_reconnect_flow(mode, server_file, reason="monitor"):
+    """Retry the last server, then fail over. Runs in a background thread."""
+    cfg = _load_autostart_config()
+    retries = max(1, min(int(cfg.get("retry_count", 3)), 10))
+    retry_delay = max(1, min(int(cfg.get("retry_delay_sec", 5)), 60))
+    failover_scope = str(cfg.get("failover_scope", "global")).strip().lower()
+
+    _set_op(state="reconnecting", target=server_file, mode=mode,
+            message=f"Reconnecting to {server_file}...", attempt=0,
+            attempts_max=retries, reason=reason)
+    _add_event("reconnect", f"Reconnect started ({reason}) using {mode}:{server_file}")
+
+    ok = False
+    last_msg = "Reconnect failed"
+    try:
+        for attempt in range(retries):
+            if _cancel_event.is_set():
+                _add_event("reconnect", "Reconnect cancelled (user took over)")
+                return False, "Cancelled"
+            _set_op(attempt=attempt + 1,
+                    message=f"Reconnect attempt {attempt + 1}/{retries} to {server_file}")
+            _add_event("reconnect", f"Attempt {attempt + 1}/{retries} to {mode}:{server_file}")
+            with vpn_lock:
+                ok, last_msg = _attempt_connect(mode, server_file)
+            if ok:
+                _add_event("reconnect", f"Reconnect succeeded on attempt {attempt + 1}")
+                _set_op(state="idle", message=last_msg, attempt=0, last_error=None)
+                return True, last_msg
+            _set_op(last_error=last_msg)
+            # Sleep in small slices so cancellation stays responsive
+            for _ in range(retry_delay * 2):
+                if _cancel_event.is_set():
+                    _add_event("reconnect", "Reconnect cancelled (user took over)")
+                    return False, "Cancelled"
+                time.sleep(0.5)
+
+        if failover_scope == "none":
+            _add_event("reconnect", "Retries exhausted; failover disabled")
+            _set_op(state="idle", message=last_msg, attempt=0, last_error=last_msg)
+            return False, last_msg
+
+        failover_mode = mode if failover_scope == "same_mode" else random.choice(["openvpn", "wireguard"])
+        failover_server = _pick_random_failover(failover_mode)
+        if not failover_server:
+            _add_event("reconnect", "Retries exhausted; no failover servers available")
+            _set_op(state="idle", message=last_msg, attempt=0, last_error=last_msg)
+            return False, last_msg
+
+        _add_event("reconnect", f"Failover to {failover_mode}:{failover_server}")
+        _set_op(target=failover_server, mode=failover_mode,
+                message=f"Failover: connecting to {failover_server}...")
+        with vpn_lock:
+            ok, last_msg = _attempt_connect(failover_mode, failover_server)
+        if ok:
+            _add_event("reconnect", "Failover succeeded")
+            _set_op(state="idle", message=last_msg, attempt=0, last_error=None)
+            return True, last_msg
+        _add_event("reconnect", f"Failover failed: {last_msg}")
+        _set_op(state="idle", message=last_msg, attempt=0, last_error=last_msg)
+        return False, last_msg
+    finally:
+        _cancel_event.clear()
+        op = _get_op()
+        if op["state"] == "reconnecting":  # safety net
+            _set_op(state="idle", attempt=0)
+
+
+def request_reconnect(mode, server_file, reason):
+    """Run the reconnect flow in the background. Returns (accepted, message)."""
+    op = _get_op()
+    if op["state"] != "idle":
+        return False, f"Busy: {op['state']}"
+    threading.Thread(
+        target=_run_reconnect_flow, args=(mode, server_file, reason), daemon=True
+    ).start()
+    return True, "Reconnect started"
 
 
 # ===========================================================================
@@ -862,35 +1291,59 @@ def read_wg_log(lines=50):
 # ===========================================================================
 
 def _health_monitor():
-    """Check VPN interface every 10s; auto-reconnect on drop."""
-    global connected_since
+    """Supervise the tunnel AND the proxies.
+
+    - interface gone           -> reconnect immediately
+    - interface up, no traffic -> reconnect after N failed probes
+    - proxy died               -> restart it
+    """
+    consecutive_probe_fails = 0
+    last_probe = 0.0
     while True:
-        time.sleep(10)
-        if not AUTO_RECONNECT or _reconnecting:
-            continue
-
-        vpn_mode = None
+        time.sleep(5)
         try:
-            with open(VPN_MODE_FILE) as f:
-                vpn_mode = f.read().strip()
-        except FileNotFoundError:
-            continue
+            if not AUTO_RECONNECT or _op_busy():
+                continue
 
-        iface = WG_INTERFACE if vpn_mode == "wireguard" else "tun0"
-        if _interface_alive(iface):
-            # Interface up — make sure proxies are running
-            if not get_microsocks_pid():
-                _start_proxies()
-            continue
+            vpn_mode = _read_mode_file()
+            if not vpn_mode:
+                consecutive_probe_fails = 0
+                continue
 
-        if not _last_server_file or not _last_vpn_mode:
-            continue
+            iface = WG_INTERFACE if vpn_mode == "wireguard" else "tun0"
+            if not _interface_alive(iface):
+                if _last_server_file and _last_vpn_mode:
+                    _add_event("monitor", f"Interface {iface} is down — reconnecting")
+                    request_reconnect(_last_vpn_mode, _last_server_file, "interface_down")
+                continue
 
-        _run_reconnect_flow(_last_vpn_mode, _last_server_file, reason="health_monitor")
+            # Interface is up: keep the proxies alive
+            _ensure_proxies()
+
+            # Deep probe: does traffic actually flow through the tunnel?
+            now = time.time()
+            if now - last_probe >= HEALTH_PROBE_INTERVAL:
+                last_probe = now
+                ip = _probe_connectivity()
+                if ip:
+                    consecutive_probe_fails = 0
+                    _vpn_ip["ip"] = ip
+                    _vpn_ip["ts"] = now
+                else:
+                    consecutive_probe_fails += 1
+                    _add_event("monitor",
+                               f"Connectivity probe failed ({consecutive_probe_fails}/{HEALTH_PROBE_FAILS})")
+                    if consecutive_probe_fails >= HEALTH_PROBE_FAILS:
+                        consecutive_probe_fails = 0
+                        if _last_server_file and _last_vpn_mode:
+                            _add_event("monitor", "Tunnel is dead (interface up, no traffic) — reconnecting")
+                            request_reconnect(_last_vpn_mode, _last_server_file, "connectivity_lost")
+        except Exception as e:
+            _add_event("monitor", f"Health monitor error: {e}")
 
 
 def _boot_autostart():
-    global _last_server_file, _last_vpn_mode, _last_action
+    global _last_server_file, _last_vpn_mode
     time.sleep(2)
 
     cfg = _load_autostart_config()
@@ -921,35 +1374,26 @@ def _boot_autostart():
 
     _last_server_file = target_server
     _last_vpn_mode = target_mode
-    _last_action = "autostarting"
     _add_event("autostart", f"Boot autostart target: {target_mode}:{target_server}")
-
     _run_reconnect_flow(target_mode, target_server, reason="container_boot")
 
 
 def _bandwidth_monitor():
-    """Poll interface stats every 2s to calculate speed."""
     global _bw
     while True:
         time.sleep(2)
-        vpn_mode = None
-        try:
-            with open(VPN_MODE_FILE) as f:
-                vpn_mode = f.read().strip()
-        except FileNotFoundError:
+        vpn_mode = _read_mode_file()
+        if not vpn_mode:
             _bw["rx_speed"] = _bw["tx_speed"] = 0
             continue
 
         iface = WG_INTERFACE if vpn_mode == "wireguard" else "tun0"
-        rx_path = f"/sys/class/net/{iface}/statistics/rx_bytes"
-        tx_path = f"/sys/class/net/{iface}/statistics/tx_bytes"
-
         try:
-            with open(rx_path) as f:
+            with open(f"/sys/class/net/{iface}/statistics/rx_bytes") as f:
                 rx = int(f.read().strip())
-            with open(tx_path) as f:
+            with open(f"/sys/class/net/{iface}/statistics/tx_bytes") as f:
                 tx = int(f.read().strip())
-        except (FileNotFoundError, ValueError):
+        except (OSError, ValueError):
             _bw["rx_speed"] = _bw["tx_speed"] = 0
             continue
 
@@ -968,7 +1412,7 @@ def _bandwidth_monitor():
 
 
 # ===========================================================================
-# Ping helper
+# Ping helpers
 # ===========================================================================
 
 def _ping_host(host):
@@ -981,7 +1425,7 @@ def _ping_host(host):
             m = re.search(r"time[=<](\d+(?:\.\d+)?)\s*ms", r.stdout)
             if m:
                 return round(float(m.group(1)), 1)
-    except subprocess.TimeoutExpired:
+    except (subprocess.TimeoutExpired, OSError):
         pass
     return None
 
@@ -995,21 +1439,20 @@ def _resolve_server_host(filename):
     return None
 
 
-def _startup_ping():
-    """Ping all servers once at startup and populate the cache."""
+def _ping_all_servers():
+    """Ping every known server host concurrently and refresh the cache."""
     import concurrent.futures
     servers = parse_ovpn_files() + parse_wg_files()
-    # Deduplicate by host to avoid pinging the same host twice (TCP+UDP)
-    host_map = {}  # host -> [filenames]
+    host_map = {}
     for s in servers:
         host = _resolve_server_host(s["file"])
         if host:
             host_map.setdefault(host, []).append(s["file"])
 
     now = time.time()
+
     def ping_one(host):
-        latency = _ping_host(host)
-        return host, latency
+        return host, _ping_host(host)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as pool:
         futures = {pool.submit(ping_one, h): h for h in host_map}
@@ -1022,6 +1465,16 @@ def _startup_ping():
                     _ping_cache[sf] = entry
             except Exception:
                 pass
+
+
+def _ping_refresher():
+    """Initial sweep at startup, then refresh every 15 minutes."""
+    while True:
+        try:
+            _ping_all_servers()
+        except Exception:
+            pass
+        time.sleep(900)
 
 
 # ===========================================================================
@@ -1050,67 +1503,95 @@ def api_wg_servers():
 
 @app.route("/api/connect", methods=["POST"])
 def api_connect():
-    data = request.get_json()
-    if not data or "server" not in data:
-        return jsonify({"ok": False, "error": "No server specified"}), 400
-    server_file = data["server"]
+    data = request.get_json(silent=True) or {}
+    server_file = data.get("server", "")
     if not FILENAME_RE.match(server_file):
         return jsonify({"ok": False, "error": "Invalid server file"}), 400
-    with vpn_lock:
-        ok, msg = start_vpn(server_file)
-    return jsonify({"ok": ok, "message": msg})
+    accepted, msg = request_connect("openvpn", server_file)
+    if not accepted:
+        return jsonify({"ok": False, "error": msg}), 409
+    return jsonify({"ok": True, "message": msg, "async": True})
 
 
 @app.route("/api/wg/connect", methods=["POST"])
 def api_wg_connect():
-    data = request.get_json()
-    if not data or "server" not in data:
-        return jsonify({"ok": False, "error": "No server specified"}), 400
-    server_file = data["server"]
+    data = request.get_json(silent=True) or {}
+    server_file = data.get("server", "")
     if not WG_FILENAME_RE.match(server_file):
         return jsonify({"ok": False, "error": "Invalid server file"}), 400
-    with vpn_lock:
-        ok, msg = start_wireguard(server_file)
-    return jsonify({"ok": ok, "message": msg})
+    accepted, msg = request_connect("wireguard", server_file)
+    if not accepted:
+        return jsonify({"ok": False, "error": msg}), 409
+    return jsonify({"ok": True, "message": msg, "async": True})
 
 
 @app.route("/api/disconnect", methods=["POST"])
 def api_disconnect():
-    with vpn_lock:
-        stop_vpn()
-    return jsonify({"ok": True, "message": "VPN disconnected"})
+    accepted, msg = request_disconnect()
+    if not accepted:
+        return jsonify({"ok": False, "error": msg}), 409
+    return jsonify({"ok": True, "message": msg, "async": True})
 
 
 @app.route("/api/connect/random", methods=["POST"])
 def api_connect_random():
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
     mode = data.get("vpn_mode", "openvpn")
-    protocol = data.get("protocol", "udp").upper()
+    protocol = str(data.get("protocol", "udp")).upper()
     if mode == "wireguard":
         servers = parse_wg_files()
     else:
         servers = [s for s in parse_ovpn_files() if s["protocol"] == protocol]
-    if not servers:
+    # Prefer servers we know are reachable, if we have ping data
+    reachable = [s for s in servers if _ping_cache.get(s["file"], {}).get("reachable")]
+    pool = reachable or servers
+    if not pool:
         return jsonify({"ok": False, "error": "No servers available"}), 404
-    pick = random.choice(servers)
-    with vpn_lock:
-        if mode == "wireguard":
-            ok, msg = start_wireguard(pick["file"])
-        else:
-            ok, msg = start_vpn(pick["file"])
-    return jsonify({"ok": ok, "message": msg, "server": pick["file"]})
+    pick = random.choice(pool)
+    accepted, msg = request_connect(mode, pick["file"])
+    if not accepted:
+        return jsonify({"ok": False, "error": msg}), 409
+    return jsonify({"ok": True, "message": msg, "server": pick["file"], "async": True})
+
+
+@app.route("/api/reconnect-now", methods=["POST"])
+def api_reconnect_now():
+    global _last_server_file, _last_vpn_mode
+    data = request.get_json(silent=True) or {}
+    mode = data.get("vpn_mode")
+    server = data.get("server")
+
+    if mode and mode not in ("openvpn", "wireguard"):
+        return jsonify({"ok": False, "error": "Invalid vpn_mode"}), 400
+
+    if mode and server:
+        if not _mode_and_server_valid(mode, server):
+            return jsonify({"ok": False, "error": "Invalid server for vpn_mode"}), 400
+        _last_vpn_mode = mode
+        _last_server_file = server
+
+    if not _last_server_file or not _last_vpn_mode:
+        last = _load_last_success()
+        if last:
+            _last_server_file = str(last.get("server"))
+            _last_vpn_mode = str(last.get("vpn_mode"))
+
+    if not _last_server_file or not _last_vpn_mode:
+        return jsonify({"ok": False, "error": "No reconnect target available"}), 400
+
+    _add_event("control", f"Manual reconnect requested for {_last_vpn_mode}:{_last_server_file}")
+    accepted, msg = request_reconnect(_last_vpn_mode, _last_server_file, "manual")
+    if not accepted:
+        return jsonify({"ok": False, "error": msg}), 409
+    return jsonify({"ok": True, "message": msg, "server": _last_server_file,
+                    "vpn_mode": _last_vpn_mode, "async": True})
 
 
 @app.route("/api/logs")
 def api_logs():
     lines = request.args.get("lines", 100, type=int)
     lines = min(lines, 500)
-    vpn_mode = "openvpn"
-    try:
-        with open(VPN_MODE_FILE) as f:
-            vpn_mode = f.read().strip() or "openvpn"
-    except FileNotFoundError:
-        pass
+    vpn_mode = _read_mode_file() or "openvpn"
     if vpn_mode == "wireguard":
         return jsonify({"log": read_wg_log(lines)})
     return jsonify({"log": read_log(lines)})
@@ -1131,7 +1612,7 @@ def api_settings_get():
 @app.route("/api/settings", methods=["POST"])
 def api_settings_post():
     global SOCKS_PORT, SOCKS_BIND, HTTP_PROXY_ENABLED, HTTP_PROXY_PORT, HTTP_PROXY_BIND, AUTO_RECONNECT
-    data = request.get_json()
+    data = request.get_json(silent=True)
     if not data:
         return jsonify({"ok": False, "error": "No data provided"}), 400
 
@@ -1159,7 +1640,7 @@ def api_settings_post():
             socks_changed = True
 
     http_enabled = data.get("http_proxy_enabled")
-    if http_enabled is not None:
+    if http_enabled is not None and bool(http_enabled) != HTTP_PROXY_ENABLED:
         HTTP_PROXY_ENABLED = bool(http_enabled)
         http_changed = True
     http_port = data.get("http_proxy_port")
@@ -1186,21 +1667,14 @@ def api_settings_post():
     if ar is not None:
         AUTO_RECONNECT = bool(ar)
 
-    if socks_changed:
-        pid = get_microsocks_pid()
-        if pid:
-            try:
-                os.kill(pid, signal.SIGTERM)
-                time.sleep(0.5)
-            except ProcessLookupError:
-                pass
-            subprocess.Popen(
-                ["microsocks", "-i", SOCKS_BIND, "-p", str(SOCKS_PORT)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
+    # Restart proxies with new settings only if a tunnel should be carrying them
+    if socks_changed and _socks_running():
+        stop_socks()
+        start_socks()
+        _add_event("proxy", "Restarted microsocks after settings update")
 
     if http_changed:
-        if HTTP_PROXY_ENABLED and get_tinyproxy_pid():
+        if HTTP_PROXY_ENABLED and _read_mode_file():
             stop_tinyproxy()
             start_tinyproxy()
             _add_event("proxy", "Restarted tinyproxy after settings update")
@@ -1228,7 +1702,7 @@ def api_autostart_get():
 
 @app.route("/api/autostart", methods=["POST"])
 def api_autostart_post():
-    data = request.get_json() or {}
+    data = request.get_json(silent=True) or {}
     cfg = _load_autostart_config()
 
     if "enabled" in data:
@@ -1279,43 +1753,11 @@ def api_autostart_post():
     return jsonify({"ok": True, "config": cfg})
 
 
-@app.route("/api/reconnect-now", methods=["POST"])
-def api_reconnect_now():
-    global _last_server_file, _last_vpn_mode
-    data = request.get_json() or {}
-    mode = data.get("vpn_mode")
-    server = data.get("server")
-
-    if mode and mode not in ("openvpn", "wireguard"):
-        return jsonify({"ok": False, "error": "Invalid vpn_mode"}), 400
-
-    if mode and server:
-        if not _mode_and_server_valid(mode, server):
-            return jsonify({"ok": False, "error": "Invalid server for vpn_mode"}), 400
-        _last_vpn_mode = mode
-        _last_server_file = server
-
-    if not _last_server_file or not _last_vpn_mode:
-        last = _load_last_success()
-        if last:
-            _last_server_file = str(last.get("server"))
-            _last_vpn_mode = str(last.get("vpn_mode"))
-
-    if not _last_server_file or not _last_vpn_mode:
-        return jsonify({"ok": False, "error": "No reconnect target available"}), 400
-
-    _add_event("control", f"Manual reconnect requested for {_last_vpn_mode}:{_last_server_file}")
-    with vpn_lock:
-        stop_vpn()
-    ok, msg = _run_reconnect_flow(_last_vpn_mode, _last_server_file, reason="manual")
-    return jsonify({"ok": ok, "message": msg, "server": _last_server_file, "vpn_mode": _last_vpn_mode})
-
-
 @app.route("/api/events", methods=["GET"])
 def api_events():
     lines = request.args.get("lines", 200, type=int)
     lines = max(1, min(lines, 500))
-    return jsonify({"ok": True, "events": _event_log[-lines:]})
+    return jsonify({"ok": True, "events": _get_events(lines)})
 
 
 @app.route("/api/bandwidth")
@@ -1330,9 +1772,8 @@ def api_bandwidth():
 
 @app.route("/api/ping", methods=["GET"])
 def api_ping_cached():
-    """Return all cached ping results."""
     results = []
-    for sf, entry in _ping_cache.items():
+    for sf, entry in list(_ping_cache.items()):
         results.append({"file": sf, "host": entry["host"],
                         "latency_ms": entry["latency_ms"],
                         "reachable": entry["reachable"]})
@@ -1341,25 +1782,30 @@ def api_ping_cached():
 
 @app.route("/api/ping", methods=["POST"])
 def api_ping():
-    data = request.get_json()
+    data = request.get_json(silent=True)
     if not data or "servers" not in data:
         return jsonify({"ok": False, "error": "No servers specified"}), 400
     servers = data["servers"]
-    if not isinstance(servers, list) or len(servers) > 20:
+    if not isinstance(servers, list) or not servers or len(servers) > 20:
         return jsonify({"ok": False, "error": "Provide 1-20 servers"}), 400
 
+    import concurrent.futures
     now = time.time()
     results = []
-    for sf in servers:
+
+    def ping_entry(sf):
         sf = str(sf)
         host = _resolve_server_host(sf)
         if not host:
-            results.append({"file": sf, "host": None, "latency_ms": None, "reachable": False})
-            continue
+            return {"file": sf, "host": None, "latency_ms": None, "reachable": False}
         latency = _ping_host(host)
-        entry = {"host": host, "latency_ms": latency, "reachable": latency is not None, "timestamp": now}
-        _ping_cache[sf] = entry
-        results.append({"file": sf, "host": host, "latency_ms": latency, "reachable": latency is not None})
+        _ping_cache[sf] = {"host": host, "latency_ms": latency,
+                           "reachable": latency is not None, "timestamp": now}
+        return {"file": sf, "host": host, "latency_ms": latency,
+                "reachable": latency is not None}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+        results = list(pool.map(ping_entry, servers))
     return jsonify({"ok": True, "results": results})
 
 
@@ -1370,7 +1816,7 @@ def api_favorites_get():
 
 @app.route("/api/favorites", methods=["POST"])
 def api_favorites_add():
-    data = request.get_json()
+    data = request.get_json(silent=True)
     if not data or "server" not in data:
         return jsonify({"ok": False, "error": "No server specified"}), 400
     sf = str(data["server"])
@@ -1385,7 +1831,7 @@ def api_favorites_add():
 
 @app.route("/api/favorites", methods=["DELETE"])
 def api_favorites_remove():
-    data = request.get_json()
+    data = request.get_json(silent=True)
     if not data or "server" not in data:
         return jsonify({"ok": False, "error": "No server specified"}), 400
     sf = str(data["server"])
@@ -1407,7 +1853,7 @@ def api_profiles_get():
 
 @app.route("/api/profiles", methods=["POST"])
 def api_profiles_create():
-    data = request.get_json()
+    data = request.get_json(silent=True)
     if not data or "name" not in data or "server" not in data:
         return jsonify({"ok": False, "error": "name and server required"}), 400
     name = str(data["name"]).strip()[:50]
@@ -1434,7 +1880,7 @@ def api_profiles_create():
 
 @app.route("/api/profiles", methods=["PUT"])
 def api_profiles_update():
-    data = request.get_json()
+    data = request.get_json(silent=True)
     if not data or "name" not in data:
         return jsonify({"ok": False, "error": "name required"}), 400
     name = str(data["name"]).strip()
@@ -1456,7 +1902,7 @@ def api_profiles_update():
 
 @app.route("/api/profiles", methods=["DELETE"])
 def api_profiles_delete():
-    data = request.get_json()
+    data = request.get_json(silent=True)
     if not data or "name" not in data:
         return jsonify({"ok": False, "error": "name required"}), 400
     name = str(data["name"]).strip()
@@ -1469,7 +1915,7 @@ def api_profiles_delete():
 @app.route("/api/profiles/activate", methods=["POST"])
 def api_profiles_activate():
     global SOCKS_PORT, HTTP_PROXY_PORT
-    data = request.get_json()
+    data = request.get_json(silent=True)
     if not data or "name" not in data:
         return jsonify({"ok": False, "error": "name required"}), 400
     name = str(data["name"]).strip()
@@ -1477,23 +1923,23 @@ def api_profiles_activate():
     profile = next((p for p in profiles if p["name"] == name), None)
     if not profile:
         return jsonify({"ok": False, "error": "Profile not found"}), 404
-    if "socks_port" in profile:
-        SOCKS_PORT = int(profile["socks_port"])
-    if "http_port" in profile:
-        HTTP_PROXY_PORT = int(profile["http_port"])
-    sf = profile["server"]
-    with vpn_lock:
-        if profile.get("vpn_mode") == "wireguard":
-            ok, msg = start_wireguard(sf)
-        else:
-            ok, msg = start_vpn(sf)
-    return jsonify({"ok": ok, "message": msg})
+    try:
+        if "socks_port" in profile:
+            SOCKS_PORT = int(profile["socks_port"])
+        if "http_port" in profile:
+            HTTP_PROXY_PORT = int(profile["http_port"])
+    except (TypeError, ValueError):
+        pass
+    mode = "wireguard" if profile.get("vpn_mode") == "wireguard" else "openvpn"
+    accepted, msg = request_connect(mode, profile["server"])
+    if not accepted:
+        return jsonify({"ok": False, "error": msg}), 409
+    return jsonify({"ok": True, "message": msg, "async": True})
 
 
 @app.route("/api/geoip")
 def api_geoip():
-    status = get_vpn_status()
-    ip = status.get("vpn_ip")
+    ip = _vpn_ip["ip"]
     if not ip:
         return jsonify({"ok": False, "error": "No VPN IP available"}), 404
     cached = _geoip_cache.get(ip)
@@ -1517,7 +1963,7 @@ def api_geoip():
             }
             _geoip_cache[ip] = {**result, "_ts": time.time()}
             return jsonify({"ok": True, **result})
-    except (subprocess.TimeoutExpired, json.JSONDecodeError):
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError):
         pass
     return jsonify({"ok": False, "error": "GeoIP lookup failed"}), 502
 
@@ -1526,11 +1972,11 @@ def api_geoip():
 def api_dnstest():
     try:
         r = subprocess.run(
-            ["dig", "+short", "whoami.akamai.net", "@ns1-1.akamaitech.net"],
+            ["dig", "+short", "+time=3", "+tries=1", "whoami.akamai.net", "@ns1-1.akamaitech.net"],
             capture_output=True, text=True, timeout=10,
         )
         resolver_ip = r.stdout.strip() if r.returncode == 0 else None
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         resolver_ip = None
 
     if not resolver_ip:
@@ -1540,7 +1986,7 @@ def api_dnstest():
     message = f"DNS resolver: {resolver_ip}"
     try:
         r2 = subprocess.run(
-            ["dig", "+short", "-x", resolver_ip],
+            ["dig", "+short", "+time=3", "+tries=1", "-x", resolver_ip],
             capture_output=True, text=True, timeout=5,
         )
         ptr = r2.stdout.strip().lower()
@@ -1549,7 +1995,7 @@ def api_dnstest():
         else:
             leak = True
             message = f"DNS: Possible leak (resolver: {resolver_ip}, {ptr or 'unknown'})"
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         message = f"DNS resolver: {resolver_ip} (could not verify)"
 
     return jsonify({"ok": True, "status": "leak" if leak else "secure", "message": message, "resolver_ip": resolver_ip})
@@ -1559,15 +2005,24 @@ def api_dnstest():
 # Start background threads & run
 # ===========================================================================
 
+def _start_background_threads():
+    threading.Thread(target=_health_monitor, daemon=True).start()
+    threading.Thread(target=_bandwidth_monitor, daemon=True).start()
+    threading.Thread(target=_ping_refresher, daemon=True).start()
+    threading.Thread(target=_boot_autostart, daemon=True).start()
+
+
 if __name__ == "__main__":
     os.makedirs(DATA_DIR, exist_ok=True)
+    _record_original_gateway()
     _save_autostart_config(_load_autostart_config())
     last = _load_last_success()
     if last:
         _last_server_file = str(last.get("server"))
         _last_vpn_mode = str(last.get("vpn_mode"))
-    threading.Thread(target=_health_monitor, daemon=True).start()
-    threading.Thread(target=_bandwidth_monitor, daemon=True).start()
-    threading.Thread(target=_startup_ping, daemon=True).start()
-    threading.Thread(target=_boot_autostart, daemon=True).start()
-    app.run(host="0.0.0.0", port=8080)
+    _start_background_threads()
+    try:
+        from waitress import serve
+        serve(app, host="0.0.0.0", port=8000, threads=12)
+    except ImportError:
+        app.run(host="0.0.0.0", port=8000, threaded=True)
