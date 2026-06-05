@@ -192,6 +192,26 @@ body::before {
 .stat .v { font-family: var(--mono); font-size: 13px; font-weight: 500; margin-top: 4px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .stat .v .dim { color: var(--ink-dim); }
 
+/* bandwidth sparkline */
+.bw-chart-wrap { margin-top: 12px; position: relative; }
+.bw-chart-wrap canvas { width: 100%; height: 52px; display: block; border-radius: var(--r-sm); background: rgba(0,0,0,0.22); border: 1px solid var(--line-soft); }
+.bw-legend { position: absolute; top: 6px; right: 10px; display: flex; gap: 12px; font-family: var(--mono); font-size: 9.5px; }
+.bw-legend .dn { color: var(--accent); }
+.bw-legend .up { color: #5aa9ff; }
+
+/* stats page */
+.stat-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 18px; }
+.big-stat { background: var(--panel); border: 1px solid var(--line-soft); border-radius: var(--r); padding: 16px 18px; }
+.big-stat .k { font-size: 9.5px; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; color: var(--ink-faint); }
+.big-stat .v { font-family: var(--mono); font-size: 21px; font-weight: 600; margin-top: 6px; }
+.big-stat .v.accent { color: var(--accent); }
+.big-stat .v.coral { color: var(--coral); }
+.tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
+.tbl th { text-align: left; font-size: 9.5px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-faint); padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.tbl td { padding: 8px 12px; border-bottom: 1px solid var(--line-soft); font-family: var(--mono); font-size: 11.5px; }
+.tbl td:first-child { font-family: var(--sans); font-weight: 600; font-size: 12px; }
+.tbl tr:last-child td { border-bottom: none; }
+
 /* connecting ticker */
 .op-ticker {
     margin-top: 16px; padding: 10px 14px;
@@ -361,6 +381,10 @@ select.input option { background: var(--panel); }
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
                 Servers
             </div>
+            <div class="nav-item" data-page="stats" onclick="navTo('stats',this)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+                Stats
+            </div>
             <div class="nav-item" data-page="settings" onclick="navTo('settings',this)">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                 Settings
@@ -397,6 +421,7 @@ select.input option { background: var(--panel); }
 
         <div class="side-status">
             <div class="side-status-row"><div class="pulse-dot" id="sideDot"></div><span id="sideLabel">Offline</span></div>
+            <div id="ksRow" style="display:none;margin-top:8px;font-size:10.5px;font-weight:700;color:var(--accent);letter-spacing:.08em">⛨ KILL SWITCH ARMED</div>
             <div class="side-status-meta" id="sideMeta" style="display:none">
                 <div id="sideServer"></div>
                 <div id="sideIp"></div>
@@ -413,6 +438,10 @@ select.input option { background: var(--panel); }
                 <button class="btn btn-outline" onclick="toggleLivePanel()">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
                     Live Log
+                </button>
+                <button class="btn btn-outline" id="btnBest" onclick="connectBest()" title="Connect to the lowest-latency server">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                    Best
                 </button>
                 <button class="btn btn-outline" id="btnRandom" onclick="connectRandom()">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/></svg>
@@ -446,6 +475,10 @@ select.input option { background: var(--panel); }
                     <div class="stat"><div class="k">Throughput</div><div class="v" id="stSpeed">—</div></div>
                     <div class="stat"><div class="k">Session Data</div><div class="v" id="stData">—</div></div>
                 </div>
+                <div class="bw-chart-wrap" id="bwChartWrap" style="display:none">
+                    <canvas id="bwChart" height="52"></canvas>
+                    <div class="bw-legend"><span class="dn">▼ down</span><span class="up">▲ up</span></div>
+                </div>
                 <div class="op-ticker" id="opTicker"></div>
             </div>
 
@@ -471,6 +504,28 @@ select.input option { background: var(--panel); }
                     <span class="count-chip" id="countChip"></span>
                 </div>
                 <div id="serverList"></div>
+            </div>
+
+            <!-- ===== Page: Stats ===== -->
+            <div class="page" id="page-stats" style="display:none">
+                <div class="stat-cards">
+                    <div class="big-stat"><div class="k">Uptime Today</div><div class="v accent" id="sTodayUp">—</div></div>
+                    <div class="big-stat"><div class="k">Total Tunnel Time</div><div class="v" id="sTotalUp">—</div></div>
+                    <div class="big-stat"><div class="k">Sessions</div><div class="v" id="sSessions">—</div></div>
+                    <div class="big-stat"><div class="k">Unexpected Drops</div><div class="v coral" id="sDrops">—</div></div>
+                    <div class="big-stat"><div class="k">Auto-Recoveries</div><div class="v" id="sReconnects">—</div></div>
+                </div>
+                <div class="card wide" style="margin-bottom:14px">
+                    <h3>Server Reliability</h3>
+                    <p class="desc">Connect counts, drops and accumulated tunnel time per server.</p>
+                    <table class="tbl"><thead><tr><th>Server</th><th>Mode</th><th>Connects</th><th>Drops</th><th>Tunnel time</th></tr></thead>
+                    <tbody id="srvStatsBody"><tr><td colspan="5" style="color:var(--ink-faint)">No data yet.</td></tr></tbody></table>
+                </div>
+                <div class="card wide">
+                    <h3>Recent Sessions</h3>
+                    <table class="tbl"><thead><tr><th>Server</th><th>Mode</th><th>Duration</th><th>Ended because</th></tr></thead>
+                    <tbody id="sessBody"><tr><td colspan="4" style="color:var(--ink-faint)">No data yet.</td></tr></tbody></table>
+                </div>
             </div>
 
             <!-- ===== Page: Settings ===== -->
@@ -519,6 +574,47 @@ select.input option { background: var(--panel); }
                             <button class="btn btn-accent" onclick="saveAutostartSettings()">Save auto-start</button>
                             <span class="inline-status" id="autostartStatus"></span>
                         </div>
+                    </div>
+                    <div class="card">
+                        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>Kill Switch</h3>
+                        <p class="desc">Blocks all egress that isn't through the tunnel (firewall level). If the VPN drops, traffic fails closed instead of leaking out your real IP while auto-reconnect works.</p>
+                        <div class="toggle-row"><div class="toggle" id="ksToggle" onclick="toggleKS()"></div>Enable kill switch</div>
+                        <span class="hint">Allowed outside the tunnel: LAN/Docker, VPN handshakes, DNS, ping.</span>
+                    </div>
+                    <div class="card">
+                        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Proxy Authentication</h3>
+                        <p class="desc">Require username/password on both SOCKS5 and HTTP proxies.</p>
+                        <div class="toggle-row"><div class="toggle" id="paToggle" onclick="togglePA()"></div>Require authentication</div>
+                        <div class="frow"><label>Username</label><input type="text" id="paUser" class="input" maxlength="64" autocomplete="off"></div>
+                        <div class="frow"><label>Password</label><input type="password" id="paPass" class="input" maxlength="64" autocomplete="new-password"></div>
+                    </div>
+                    <div class="card">
+                        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>Scheduled Rotation</h3>
+                        <p class="desc">Hop to a different server automatically once the session reaches the interval.</p>
+                        <div class="toggle-row"><div class="toggle" id="rotToggle" onclick="toggleROT()"></div>Enable rotation</div>
+                        <div class="frow"><label>Interval (minutes)</label><input type="number" id="rotInterval" class="input" value="120" min="15" max="10080"></div>
+                        <div class="frow"><label>Pick next server from</label>
+                            <select id="rotPool" class="input">
+                                <option value="global">Anywhere (same mode)</option>
+                                <option value="same_country">Same country</option>
+                                <option value="favorites">Favorites only</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>Alerts</h3>
+                        <p class="desc">Get notified on tunnel drops, recoveries and failed reconnects.</p>
+                        <div class="frow"><label>Telegram bot token</label><input type="text" id="alTgToken" class="input" placeholder="123456:ABC-..." autocomplete="off"></div>
+                        <div class="frow"><label>Telegram chat ID</label><input type="text" id="alTgChat" class="input" placeholder="e.g. 1234567"></div>
+                        <div class="frow"><label>Webhook URL (optional)</label><input type="text" id="alWebhook" class="input" placeholder="https://..."></div>
+                        <button class="btn btn-outline" onclick="testAlert()">Send test alert</button>
+                        <span class="inline-status" id="alertStatus"></span>
+                    </div>
+                    <div class="card">
+                        <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Server List</h3>
+                        <p class="desc">Download the latest OpenVPN configs straight from Surfshark. (WireGuard configs are key-bound and stay manual.)</p>
+                        <button class="btn btn-outline" id="btnCfgUpdate" onclick="updateConfigs()">Update server list</button>
+                        <span class="inline-status" id="cfgStatus"></span>
                     </div>
                     <div class="card">
                         <h3><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>DNS Leak Test</h3>
@@ -588,6 +684,7 @@ let currentServer = null, currentVpnMode = null;
 let favorites = [], recentFiles = [], pingResults = {};
 let prevConnected = null, prevOpBusy = false;
 let _httpEnabled = true, _autoReconnect = true, _autoStartEnabled = false;
+let _killSwitch = false, _proxyAuth = false, _rotation = false;
 let _socksPort = 1080, _httpPort = 8888;
 let statusTimer = null, statusFast = false;
 let logPollTimer = null, tickerTimer = null;
@@ -620,10 +717,11 @@ function navTo(name, el) {
     $("page-" + name).style.display = "block";
     document.querySelectorAll(".nav-item").forEach(n => n.classList.remove("active"));
     if (el) el.classList.add("active");
-    $("pageTitle").textContent = { servers: "Servers", settings: "Settings", profiles: "Profiles", logs: "Logs" }[name];
+    $("pageTitle").textContent = { servers: "Servers", stats: "Stats", settings: "Settings", profiles: "Profiles", logs: "Logs" }[name];
     if (name === "logs") refreshLogs();
     if (name === "settings") loadSettings();
     if (name === "profiles") loadProfiles();
+    if (name === "stats") loadStats();
 }
 
 // ============================================================
@@ -715,6 +813,7 @@ function updateUI(d) {
         $("sideLabel").textContent = "Offline"; $("sideMeta").style.display = "none";
         btnDc.style.display = "none"; btnRc.style.display = "none";
     }
+    $("ksRow").style.display = d.kill_switch ? "block" : "none";
     updateEndpoints(d.socks_bind, d.socks_port, d.http_proxy_enabled, d.http_proxy_port);
     renderServers();
 }
@@ -753,6 +852,61 @@ async function fetchBW() {
         const r = await fetch("/api/bandwidth"); const d = await r.json();
         $("stSpeed").textContent = "↓" + fmtS(d.rx_speed) + "  ↑" + fmtS(d.tx_speed);
         $("stData").textContent = "↓" + fmtB(d.rx_total) + "  ↑" + fmtB(d.tx_total);
+        drawBWChart(d.history || []);
+    } catch (e) {}
+}
+
+function drawBWChart(hist) {
+    const wrap = $("bwChartWrap"), cv = $("bwChart");
+    const show = prevConnected && hist.length > 2;
+    wrap.style.display = show ? "block" : "none";
+    if (!show) return;
+    const dpr = window.devicePixelRatio || 1;
+    const W = cv.clientWidth * dpr, H = 52 * dpr;
+    if (cv.width !== W) cv.width = W;
+    cv.height = H;
+    const ctx = cv.getContext("2d");
+    ctx.clearRect(0, 0, W, H);
+    const max = Math.max(1024, ...hist.map(h => Math.max(h[1], h[2])));
+    const n = hist.length, step = W / Math.max(1, n - 1), pad = 3 * dpr;
+    const plot = (idx, color, fill) => {
+        ctx.beginPath();
+        hist.forEach((h, i) => {
+            const x = i * step;
+            const y = H - pad - (h[idx] / max) * (H - pad * 2);
+            i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+        });
+        ctx.strokeStyle = color; ctx.lineWidth = 1.4 * dpr; ctx.stroke();
+        if (fill) {
+            ctx.lineTo((n - 1) * step, H); ctx.lineTo(0, H); ctx.closePath();
+            ctx.fillStyle = fill; ctx.fill();
+        }
+    };
+    plot(1, "#3ee6c4", "rgba(62,230,196,0.10)");   // download
+    plot(2, "#5aa9ff", null);                        // upload
+}
+
+// ============================================================
+// Stats page
+// ============================================================
+const fmtDur = s => { s = Math.round(s); if (s < 60) return s + "s"; const h = Math.floor(s/3600), m = Math.floor(s%3600/60); return h ? `${h}h ${m}m` : `${m}m ${s%60}s`; };
+async function loadStats() {
+    try {
+        const r = await fetch("/api/stats"); const d = await r.json();
+        if (!d.ok) return;
+        $("sTodayUp").textContent = fmtDur(d.uptime_today_sec);
+        $("sTotalUp").textContent = fmtDur(d.uptime_total_sec);
+        $("sSessions").textContent = d.sessions_total;
+        $("sDrops").textContent = d.drops_logged;
+        $("sReconnects").textContent = d.reconnects_runtime;
+        const sb = $("srvStatsBody");
+        sb.innerHTML = (d.servers || []).length
+            ? d.servers.map(s => `<tr><td>${esc(s.server)}</td><td>${esc(s.mode)}</td><td>${s.connects}</td><td style="color:${s.drops ? "var(--coral)" : "var(--ink-dim)"}">${s.drops}</td><td>${fmtDur(s.total_time)}</td></tr>`).join("")
+            : '<tr><td colspan="5" style="color:var(--ink-faint)">No data yet.</td></tr>';
+        const eb = $("sessBody");
+        eb.innerHTML = (d.recent_sessions || []).length
+            ? d.recent_sessions.map(s => `<tr><td>${esc(s.server)}</td><td>${esc(s.mode)}</td><td>${fmtDur(s.duration)}</td><td style="color:${s.reason === "drop" ? "var(--coral)" : "var(--ink-dim)"}">${esc(s.reason)}</td></tr>`).join("")
+            : '<tr><td colspan="4" style="color:var(--ink-faint)">No data yet.</td></tr>';
     } catch (e) {}
 }
 let _geoFetched = null;
@@ -780,6 +934,7 @@ function handleAsyncStart(res, startMsg) {
 async function connectTo(file)  { try { handleAsyncStart(await post("/api/connect", {server:file}), "Connecting — watch the status card"); } catch(e){ showToast("Request failed","error"); } }
 async function connectWg(file)  { try { handleAsyncStart(await post("/api/wg/connect", {server:file}), "Connecting via WireGuard…"); } catch(e){ showToast("Request failed","error"); } }
 async function connectRandom()  { try { const res = await post("/api/connect/random", {vpn_mode:vpnType, protocol:currentProto}); handleAsyncStart(res, "Connecting to " + (res.data.server||"random server") + "…"); } catch(e){ showToast("Request failed","error"); } }
+async function connectBest()    { try { const res = await post("/api/connect/best", {vpn_mode:vpnType, protocol:currentProto}); handleAsyncStart(res, res.data.server ? `Best pick: ${res.data.server} (${res.data.latency_ms} ms)` : "Connecting…"); } catch(e){ showToast("Request failed","error"); } }
 async function disconnect()     { try { handleAsyncStart(await post("/api/disconnect"), "Disconnecting…"); } catch(e){ showToast("Request failed","error"); } }
 async function reconnectNow()   { try { handleAsyncStart(await post("/api/reconnect-now", {vpn_mode:currentVpnMode}), "Reconnecting…"); } catch(e){ showToast("Request failed","error"); } }
 
@@ -887,8 +1042,18 @@ async function loadSettings() {
         $("settingBind").value = d.socks_bind; $("settingPort").value = d.socks_port;
         $("httpBind").value = d.http_proxy_bind || "0.0.0.0"; $("httpPort").value = d.http_proxy_port || 8888;
         _httpEnabled = d.http_proxy_enabled !== false; _autoReconnect = d.auto_reconnect !== false;
+        _killSwitch = d.kill_switch === true; _proxyAuth = d.proxy_auth_enabled === true; _rotation = d.rotation_enabled === true;
         $("httpToggle").classList.toggle("active", _httpEnabled);
         $("arToggle").classList.toggle("active", _autoReconnect);
+        $("ksToggle").classList.toggle("active", _killSwitch);
+        $("paToggle").classList.toggle("active", _proxyAuth);
+        $("rotToggle").classList.toggle("active", _rotation);
+        $("paUser").value = d.proxy_user || ""; $("paPass").value = d.proxy_pass || "";
+        $("rotInterval").value = d.rotation_interval_min || 120;
+        $("rotPool").value = d.rotation_pool || "global";
+        $("alTgToken").value = d.telegram_bot_token || "";
+        $("alTgChat").value = d.telegram_chat_id || "";
+        $("alWebhook").value = d.webhook_url || "";
         updateEndpoints(d.socks_bind, d.socks_port, _httpEnabled, d.http_proxy_port);
         loadAutostartSettings();
     } catch (e) {}
@@ -896,6 +1061,40 @@ async function loadSettings() {
 function toggleHttp() { _httpEnabled = !_httpEnabled; $("httpToggle").classList.toggle("active", _httpEnabled); }
 function toggleAR()   { _autoReconnect = !_autoReconnect; $("arToggle").classList.toggle("active", _autoReconnect); }
 function toggleAS()   { _autoStartEnabled = !_autoStartEnabled; $("asToggle").classList.toggle("active", _autoStartEnabled); }
+function toggleKS()   { _killSwitch = !_killSwitch; $("ksToggle").classList.toggle("active", _killSwitch); }
+function togglePA()   { _proxyAuth = !_proxyAuth; $("paToggle").classList.toggle("active", _proxyAuth); }
+function toggleROT()  { _rotation = !_rotation; $("rotToggle").classList.toggle("active", _rotation); }
+
+async function testAlert() {
+    const st = $("alertStatus");
+    // Save alert fields first so the test uses what's typed in
+    try {
+        await post("/api/settings", {
+            telegram_bot_token: $("alTgToken").value.trim(),
+            telegram_chat_id: $("alTgChat").value.trim(),
+            webhook_url: $("alWebhook").value.trim(),
+        });
+        const res = await post("/api/alerts/test");
+        if (res.data.ok) { st.textContent = "Sent — check Telegram/webhook"; st.style.color = "var(--accent)"; }
+        else { st.textContent = res.data.error || "Failed"; st.style.color = "var(--coral)"; }
+    } catch (e) { st.textContent = "Failed"; st.style.color = "var(--coral)"; }
+    setTimeout(() => st.textContent = "", 5000);
+}
+
+async function updateConfigs() {
+    const st = $("cfgStatus"), btn = $("btnCfgUpdate");
+    btn.disabled = true; st.textContent = "Downloading from Surfshark…"; st.style.color = "var(--ink-dim)";
+    try {
+        const res = await post("/api/configs/update");
+        if (res.data.ok) {
+            st.textContent = `Done: ${res.data.added} new, ${res.data.updated} updated (${res.data.total} total)`;
+            st.style.color = "var(--accent)";
+            fetchServers();
+        } else { st.textContent = res.data.error || "Failed"; st.style.color = "var(--coral)"; }
+    } catch (e) { st.textContent = "Failed"; st.style.color = "var(--coral)"; }
+    btn.disabled = false;
+    setTimeout(() => st.textContent = "", 8000);
+}
 
 function populateAutostartServerOptions() {
     const sel = $("asServer"); if (!sel) return;
@@ -943,6 +1142,16 @@ async function saveSettings() {
         http_proxy_bind: $("httpBind").value.trim(),
         http_proxy_port: parseInt($("httpPort").value, 10),
         auto_reconnect: _autoReconnect,
+        kill_switch: _killSwitch,
+        proxy_auth_enabled: _proxyAuth,
+        proxy_user: $("paUser").value.trim(),
+        proxy_pass: $("paPass").value,
+        rotation_enabled: _rotation,
+        rotation_interval_min: parseInt($("rotInterval").value, 10) || 120,
+        rotation_pool: $("rotPool").value,
+        telegram_bot_token: $("alTgToken").value.trim(),
+        telegram_chat_id: $("alTgChat").value.trim(),
+        webhook_url: $("alWebhook").value.trim(),
     };
     try {
         const res = await post("/api/settings", p);

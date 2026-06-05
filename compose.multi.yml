@@ -1,0 +1,56 @@
+# Multi-exit setup: one container per exit country, each with its own ports.
+# SOCKS5 :1081 -> UK, :1082 -> US. Add more services for more exits.
+#
+#   docker compose -f compose.multi.yml up -d --build
+#
+# Tip: open each dashboard (8001 / 8002), connect once to the country you
+# want, then enable Boot Auto-Start so every restart reconnects to it.
+
+x-vpn-base: &vpn-base
+  build: .
+  cap_add:
+    - NET_ADMIN
+  devices:
+    - /dev/net/tun:/dev/net/tun
+  dns:
+    - 1.1.1.1
+    - 8.8.8.8
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD", "curl", "-sf", "http://localhost:8000/api/status"]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 15s
+  sysctls:
+    - net.ipv6.conf.all.disable_ipv6=1
+    - net.ipv4.conf.all.src_valid_mark=1
+
+services:
+  vpn-uk:
+    <<: *vpn-base
+    container_name: vpn-exit-uk
+    ports:
+      - "1081:1080"
+      - "8001:8000"
+      - "8881:8888"
+    volumes:
+      - ./Open-vpn:/vpn/config
+      - ./auth.txt:/vpn/auth.txt:ro
+      - ./Wireguard:/vpn/wireguard:ro
+      - ./wireguard.txt:/vpn/wireguard.txt:ro
+      - ./data-uk:/vpn/data
+
+  vpn-us:
+    <<: *vpn-base
+    container_name: vpn-exit-us
+    ports:
+      - "1082:1080"
+      - "8002:8000"
+      - "8882:8888"
+    volumes:
+      - ./Open-vpn:/vpn/config
+      - ./auth.txt:/vpn/auth.txt:ro
+      - ./Wireguard:/vpn/wireguard:ro
+      - ./wireguard.txt:/vpn/wireguard.txt:ro
+      - ./data-us:/vpn/data

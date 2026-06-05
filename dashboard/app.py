@@ -2,14 +2,20 @@ import json
 import os
 import random
 import re
+import secrets
 import subprocess
 import threading
 import time
+import zipfile
+from collections import deque
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, redirect, render_template, request, session
 
 app = Flask(__name__)
+
+# Optional dashboard password (set DASHBOARD_PASSWORD env to enable login)
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "").strip()
 
 # ---------------------------------------------------------------------------
 # Config paths
@@ -51,6 +57,31 @@ HTTP_PROXY_ENABLED = True
 HTTP_PROXY_PORT = int(os.environ.get("HTTP_PORT", "8888"))
 HTTP_PROXY_BIND = os.environ.get("HTTP_BIND", "0.0.0.0")
 AUTO_RECONNECT = True
+KILL_SWITCH = False
+
+# Extended feature settings (persisted to settings.json with the above)
+SETTINGS = {
+    "proxy_auth_enabled": False,
+    "proxy_user": "",
+    "proxy_pass": "",
+    "rotation_enabled": False,
+    "rotation_interval_min": 120,   # rotate after this much connected time
+    "rotation_pool": "global",      # global | same_country | favorites
+    "telegram_bot_token": "",
+    "telegram_chat_id": "",
+    "webhook_url": "",
+}
+SETTINGS_FILE = "settings.json"
+
+# Counters for /metrics and /api/stats
+_reconnects_total = 0
+_drops_total = 0
+
+# Bandwidth speed history: (ts, rx_speed, tx_speed), one sample every 2s
+_bw_history = deque(maxlen=180)
+
+# Current connection session (for uptime/reliability stats)
+_session_current = None  # {"server","mode","started"}
 
 # vpn_lock serializes all start/stop process manipulation.
 vpn_lock = threading.Lock()
@@ -341,6 +372,115 @@ def _mode_and_server_valid(vpn_mode, server_file):
 
 
 # ===========================================================================
+# Settings persistence (proxy/auto-reconnect/kill-switch/rotation/alerts
+# survive container restarts)
+# ===========================================================================
+
+def _persist_settings():
+    save_json(SETTINGS_FILE, {
+        "socks_port": SOCKS_PORT,
+        "socks_bind": SOCKS_BIND,
+        "http_proxy_enabled": HTTP_PROXY_ENABLED,
+        "http_proxy_port": HTTP_PROXY_PORT,
+        "http_proxy_bind": HTTP_PROXY_BIND,
+        "auto_reconnect": AUTO_RECONNECT,
+        "kill_switch": KILL_SWITCH,
+        **SETTINGS,
+    })
+
+
+def _load_persisted_settings():
+    global SOCKS_PORT, SOCKS_BIND, HTTP_PROXY_ENABLED, HTTP_PROXY_PORT
+    global HTTP_PROXY_BIND, AUTO_RECONNECT, KILL_SWITCH
+    data = load_json(SETTINGS_FILE, {})
+    if not isinstance(data, dict):
+        return
+    try:
+        if "socks_port" in data:
+            SOCKS_PORT = int(data["socks_port"])
+        if "socks_bind" in data:
+            SOCKS_BIND = str(data["socks_bind"])
+        if "http_proxy_enabled" in data:
+            HTTP_PROXY_ENABLED = bool(data["http_proxy_enabled"])
+        if "http_proxy_port" in data:
+            HTTP_PROXY_PORT = int(data["http_proxy_port"])
+        if "http_proxy_bind" in data:
+            HTTP_PROXY_BIND = str(data["http_proxy_bind"])
+        if "auto_reconnect" in data:
+            AUTO_RECONNECT = bool(data["auto_reconnect"])
+        if "kill_switch" in data:
+            KILL_SWITCH = bool(data["kill_switch"])
+        for key in SETTINGS:
+            if key in data:
+                SETTINGS[key] = data[key]
+    except (TypeError, ValueError):
+        pass
+
+
+# ===========================================================================
+# Connection session log (powers /api/stats reliability data)
+# ===========================================================================
+
+def _begin_session(server_file, vpn_mode):
+    global _session_current
+    _session_current = {"server": server_file, "mode": vpn_mode, "started": time.time()}
+
+
+def _end_session(reason):
+    """Close the active session and append it to sessions.json. Idempotent."""
+    global _session_current
+    if not _session_current:
+        return
+    entry = dict(_session_current)
+    _session_current = None
+    entry["ended"] = time.time()
+    entry["duration"] = round(entry["ended"] - entry["started"], 1)
+    entry["reason"] = reason
+    sessions = load_json("sessions.json", [])
+    sessions.append(entry)
+    save_json("sessions.json", sessions[-500:])
+
+
+# ===========================================================================
+# Alerts (Telegram bot / generic webhook), fired from a background thread
+# ===========================================================================
+
+def _send_alert(title, message):
+    tg_token = str(SETTINGS.get("telegram_bot_token", "")).strip()
+    tg_chat = str(SETTINGS.get("telegram_chat_id", "")).strip()
+    hook = str(SETTINGS.get("webhook_url", "")).strip()
+    if not ((tg_token and tg_chat) or hook):
+        return
+
+    def work():
+        text = f"[VPN] {title}\n{message}" if message else f"[VPN] {title}"
+        if tg_token and tg_chat:
+            try:
+                subprocess.run(
+                    ["curl", "-s", "--max-time", "8", "-X", "POST",
+                     f"https://api.telegram.org/bot{tg_token}/sendMessage",
+                     "-d", f"chat_id={tg_chat}",
+                     "--data-urlencode", f"text={text}"],
+                    capture_output=True, timeout=12,
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+        if hook and re.match(r"^https?://", hook):
+            try:
+                payload = json.dumps({"title": title, "message": message,
+                                      "ts": _now_iso(), "source": "surfshark-vpn-proxy"})
+                subprocess.run(
+                    ["curl", "-s", "--max-time", "8", "-X", "POST",
+                     "-H", "Content-Type: application/json", "-d", payload, hook],
+                    capture_output=True, timeout=12,
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+
+    threading.Thread(target=work, daemon=True).start()
+
+
+# ===========================================================================
 # Process helpers
 # ===========================================================================
 
@@ -579,6 +719,37 @@ def _refresh_vpn_ip_async():
     threading.Thread(target=work, daemon=True).start()
 
 
+def _detect_local_subnets(gw_dev):
+    """LAN/Docker subnets that must stay reachable outside the tunnel.
+    Uses LAN_NETWORK env (comma-separated CIDRs) or auto-detects."""
+    lan_env = os.environ.get("LAN_NETWORK", "").strip()
+    if lan_env:
+        return [s.strip() for s in lan_env.split(",") if s.strip()]
+    subnets = []
+    try:
+        addr = subprocess.run(
+            ["ip", "-o", "-4", "addr", "show", "dev", gw_dev],
+            capture_output=True, text=True, timeout=5,
+        )
+        for line in addr.stdout.splitlines():
+            m = re.search(r"inet (\d+\.\d+\.\d+\.\d+/\d+)", line)
+            if m:
+                ip_part, prefix = m.group(1).split("/")
+                prefix_int = int(prefix)
+                octets = list(map(int, ip_part.split(".")))
+                mask = (0xFFFFFFFF << (32 - prefix_int)) & 0xFFFFFFFF
+                net = [
+                    octets[0] & (mask >> 24 & 0xFF),
+                    octets[1] & (mask >> 16 & 0xFF),
+                    octets[2] & (mask >> 8 & 0xFF),
+                    octets[3] & (mask & 0xFF),
+                ]
+                subnets.append(f"{net[0]}.{net[1]}.{net[2]}.{net[3]}/{prefix}")
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    return subnets
+
+
 def _preserve_lan_routes():
     """Pin routes for LAN/Docker subnets so the dashboard stays reachable
     after the VPN takes over the default route."""
@@ -592,30 +763,7 @@ def _preserve_lan_routes():
             return
         gateway = gw_match.group(1)
         gw_dev = gw_match.group(2)
-
-        lan_env = os.environ.get("LAN_NETWORK", "").strip()
-        if lan_env:
-            subnets = [s.strip() for s in lan_env.split(",") if s.strip()]
-        else:
-            addr = subprocess.run(
-                ["ip", "-o", "-4", "addr", "show", "dev", gw_dev],
-                capture_output=True, text=True, timeout=5,
-            )
-            subnets = []
-            for line in addr.stdout.splitlines():
-                m = re.search(r"inet (\d+\.\d+\.\d+\.\d+/\d+)", line)
-                if m:
-                    ip_part, prefix = m.group(1).split("/")
-                    prefix_int = int(prefix)
-                    octets = list(map(int, ip_part.split(".")))
-                    mask = (0xFFFFFFFF << (32 - prefix_int)) & 0xFFFFFFFF
-                    net = [
-                        octets[0] & (mask >> 24 & 0xFF),
-                        octets[1] & (mask >> 16 & 0xFF),
-                        octets[2] & (mask >> 8 & 0xFF),
-                        octets[3] & (mask & 0xFF),
-                    ]
-                    subnets.append(f"{net[0]}.{net[1]}.{net[2]}.{net[3]}/{prefix}")
+        subnets = _detect_local_subnets(gw_dev)
 
         for subnet in subnets:
             subprocess.run(
@@ -629,23 +777,85 @@ def _preserve_lan_routes():
 
 
 # ===========================================================================
+# Kill switch (iptables): when enabled, traffic may only leave through the
+# tunnel. Without it, a dropped tunnel silently leaks proxy traffic out the
+# real interface while auto-reconnect works.
+# ===========================================================================
+
+KS_CHAIN = "VPN_KILLSWITCH"
+
+
+def _ipt(*args):
+    try:
+        return subprocess.run(["iptables", *args], capture_output=True,
+                              text=True, timeout=5)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+
+def remove_kill_switch():
+    _ipt("-D", "OUTPUT", "-j", KS_CHAIN)
+    _ipt("-F", KS_CHAIN)
+    _ipt("-X", KS_CHAIN)
+
+
+def apply_kill_switch():
+    """(Re)install the kill-switch chain. Allowed outside the tunnel:
+    loopback, LAN/Docker subnets (dashboard + proxy clients), VPN handshake
+    ports, DNS (to resolve server hostnames), and ICMP (latency pings).
+    Everything else must exit via tun*/wg*."""
+    remove_kill_switch()
+    if not KILL_SWITCH:
+        _add_event("killswitch", "Kill switch disabled")
+        return
+    _ipt("-N", KS_CHAIN)
+    _ipt("-A", KS_CHAIN, "-o", "lo", "-j", "ACCEPT")
+    _ipt("-A", KS_CHAIN, "-o", "tun+", "-j", "ACCEPT")
+    _ipt("-A", KS_CHAIN, "-o", "wg+", "-j", "ACCEPT")
+    gw_dev = _orig_gateway["dev"] or "eth0"
+    for subnet in _detect_local_subnets(gw_dev):
+        _ipt("-A", KS_CHAIN, "-d", subnet, "-j", "ACCEPT")
+    # VPN handshake traffic (WireGuard 51820, OpenVPN UDP 1194 / TCP 1443)
+    _ipt("-A", KS_CHAIN, "-p", "udp", "--dport", "51820", "-j", "ACCEPT")
+    _ipt("-A", KS_CHAIN, "-p", "udp", "--dport", "1194", "-j", "ACCEPT")
+    _ipt("-A", KS_CHAIN, "-p", "tcp", "--dport", "1443", "-j", "ACCEPT")
+    # DNS so server hostnames resolve while disconnected; ICMP for pings
+    _ipt("-A", KS_CHAIN, "-p", "udp", "--dport", "53", "-j", "ACCEPT")
+    _ipt("-A", KS_CHAIN, "-p", "tcp", "--dport", "53", "-j", "ACCEPT")
+    _ipt("-A", KS_CHAIN, "-p", "icmp", "-j", "ACCEPT")
+    # REJECT (not DROP) so blocked clients fail fast instead of hanging
+    _ipt("-A", KS_CHAIN, "-j", "REJECT")
+    _ipt("-I", "OUTPUT", "-j", KS_CHAIN)
+    _add_event("killswitch", "Kill switch enabled — non-tunnel egress blocked")
+
+
+# ===========================================================================
 # Proxy management (microsocks + tinyproxy)
 # ===========================================================================
 
 TINYPROXY_CONF = "/etc/tinyproxy/tinyproxy.conf"
 
 
+def _proxy_auth_active():
+    return (SETTINGS.get("proxy_auth_enabled")
+            and str(SETTINGS.get("proxy_user", "")).strip()
+            and str(SETTINGS.get("proxy_pass", "")).strip())
+
+
 def _write_tinyproxy_conf():
     os.makedirs("/etc/tinyproxy", exist_ok=True)
+    conf = (
+        f"Port {HTTP_PROXY_PORT}\n"
+        f"Listen {HTTP_PROXY_BIND}\n"
+        "Timeout 600\n"
+        "Allow 0.0.0.0/0\n"
+        "MaxClients 100\n"
+        "ViaProxyName \"tinyproxy\"\n"
+    )
+    if _proxy_auth_active():
+        conf += f"BasicAuth {SETTINGS['proxy_user'].strip()} {SETTINGS['proxy_pass'].strip()}\n"
     with open(TINYPROXY_CONF, "w") as f:
-        f.write(
-            f"Port {HTTP_PROXY_PORT}\n"
-            f"Listen {HTTP_PROXY_BIND}\n"
-            "Timeout 600\n"
-            "Allow 0.0.0.0/0\n"
-            "MaxClients 100\n"
-            "ViaProxyName \"tinyproxy\"\n"
-        )
+        f.write(conf)
 
 
 def start_socks():
@@ -655,9 +865,11 @@ def start_socks():
             return
         _kill_strays("microsocks")
         _add_event("proxy", f"Starting microsocks at {SOCKS_BIND}:{SOCKS_PORT}")
+        cmd = ["microsocks", "-i", SOCKS_BIND, "-p", str(SOCKS_PORT)]
+        if _proxy_auth_active():
+            cmd += ["-u", SETTINGS["proxy_user"].strip(), "-P", SETTINGS["proxy_pass"].strip()]
         _socks_proc = subprocess.Popen(
-            ["microsocks", "-i", SOCKS_BIND, "-p", str(SOCKS_PORT)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
 
 
@@ -765,6 +977,8 @@ def get_vpn_status():
         "http_proxy_bind": HTTP_PROXY_BIND,
         "http_proxy_running": _tinyproxy_running(),
         "auto_reconnect": AUTO_RECONNECT,
+        "kill_switch": KILL_SWITCH,
+        "rotation_enabled": bool(SETTINGS.get("rotation_enabled")),
         "connected_since": connected_since if connected else None,
         # Operation state for the non-blocking UI
         "op_state": op["state"],
@@ -819,9 +1033,10 @@ def read_wg_log(lines=50):
 # Connect / disconnect core (always called with vpn_lock held)
 # ===========================================================================
 
-def stop_vpn():
+def stop_vpn(reason="replaced"):
     """Stop OpenVPN, WireGuard, and both proxies."""
     global connected_since, _openvpn_proc
+    _end_session(reason)
     _add_event("control", "Stopping VPN and proxies")
 
     with _proc_lock:
@@ -886,6 +1101,7 @@ def _on_connected(server_file, vpn_mode):
     connected_since = time.time()
     _last_server_file = server_file
     _last_vpn_mode = vpn_mode
+    _begin_session(server_file, vpn_mode)
     _ensure_proxies()
     recent = load_json("recent.json", [])
     entry = {
@@ -1198,7 +1414,7 @@ def request_disconnect():
     def worker():
         try:
             with vpn_lock:
-                stop_vpn()
+                stop_vpn(reason="user")
             _set_op(state="idle", message="Disconnected", last_error=None)
             _add_event("control", "Disconnected by user")
         except Exception as e:
@@ -1210,6 +1426,7 @@ def request_disconnect():
 
 def _run_reconnect_flow(mode, server_file, reason="monitor"):
     """Retry the last server, then fail over. Runs in a background thread."""
+    global _reconnects_total
     cfg = _load_autostart_config()
     retries = max(1, min(int(cfg.get("retry_count", 3)), 10))
     retry_delay = max(1, min(int(cfg.get("retry_delay_sec", 5)), 60))
@@ -1233,8 +1450,11 @@ def _run_reconnect_flow(mode, server_file, reason="monitor"):
             with vpn_lock:
                 ok, last_msg = _attempt_connect(mode, server_file)
             if ok:
+                _reconnects_total += 1
                 _add_event("reconnect", f"Reconnect succeeded on attempt {attempt + 1}")
                 _set_op(state="idle", message=last_msg, attempt=0, last_error=None)
+                if reason not in ("manual", "container_boot"):
+                    _send_alert("Reconnected", f"Back online via {mode}:{server_file} (attempt {attempt + 1})")
                 return True, last_msg
             _set_op(last_error=last_msg)
             # Sleep in small slices so cancellation stays responsive
@@ -1247,6 +1467,7 @@ def _run_reconnect_flow(mode, server_file, reason="monitor"):
         if failover_scope == "none":
             _add_event("reconnect", "Retries exhausted; failover disabled")
             _set_op(state="idle", message=last_msg, attempt=0, last_error=last_msg)
+            _send_alert("Reconnect FAILED", f"All {retries} retries to {server_file} failed: {last_msg}")
             return False, last_msg
 
         failover_mode = mode if failover_scope == "same_mode" else random.choice(["openvpn", "wireguard"])
@@ -1262,11 +1483,15 @@ def _run_reconnect_flow(mode, server_file, reason="monitor"):
         with vpn_lock:
             ok, last_msg = _attempt_connect(failover_mode, failover_server)
         if ok:
+            _reconnects_total += 1
             _add_event("reconnect", "Failover succeeded")
             _set_op(state="idle", message=last_msg, attempt=0, last_error=None)
+            if reason not in ("manual", "container_boot"):
+                _send_alert("Failover succeeded", f"Now connected via {failover_mode}:{failover_server}")
             return True, last_msg
         _add_event("reconnect", f"Failover failed: {last_msg}")
         _set_op(state="idle", message=last_msg, attempt=0, last_error=last_msg)
+        _send_alert("Reconnect FAILED", f"Retries and failover both failed. Last error: {last_msg}")
         return False, last_msg
     finally:
         _cancel_event.clear()
@@ -1289,6 +1514,16 @@ def request_reconnect(mode, server_file, reason):
 # ===========================================================================
 # Background threads
 # ===========================================================================
+
+def _register_drop(kind, detail):
+    """Bookkeeping for an unexpected tunnel drop: stats + alert + event."""
+    global _drops_total
+    _drops_total += 1
+    _end_session("drop")
+    _add_event("monitor", f"{detail} — reconnecting")
+    _send_alert("Tunnel dropped",
+                f"{detail} ({_last_vpn_mode}:{_last_server_file}). Auto-reconnect started.")
+
 
 def _health_monitor():
     """Supervise the tunnel AND the proxies.
@@ -1313,7 +1548,7 @@ def _health_monitor():
             iface = WG_INTERFACE if vpn_mode == "wireguard" else "tun0"
             if not _interface_alive(iface):
                 if _last_server_file and _last_vpn_mode:
-                    _add_event("monitor", f"Interface {iface} is down — reconnecting")
+                    _register_drop("interface_down", f"Interface {iface} went down")
                     request_reconnect(_last_vpn_mode, _last_server_file, "interface_down")
                 continue
 
@@ -1336,7 +1571,8 @@ def _health_monitor():
                     if consecutive_probe_fails >= HEALTH_PROBE_FAILS:
                         consecutive_probe_fails = 0
                         if _last_server_file and _last_vpn_mode:
-                            _add_event("monitor", "Tunnel is dead (interface up, no traffic) — reconnecting")
+                            _register_drop("connectivity_lost",
+                                           "Tunnel dead: interface up but no traffic")
                             request_reconnect(_last_vpn_mode, _last_server_file, "connectivity_lost")
         except Exception as e:
             _add_event("monitor", f"Health monitor error: {e}")
@@ -1405,10 +1641,53 @@ def _bandwidth_monitor():
             _bw["tx_speed"] = max(0, (tx - _bw["last_tx"]) / dt)
             _bw["rx_total"] += max(0, rx - _bw["last_rx"])
             _bw["tx_total"] += max(0, tx - _bw["last_tx"])
+            _bw_history.append((round(now, 1), round(_bw["rx_speed"], 1),
+                                round(_bw["tx_speed"], 1)))
 
         _bw["last_rx"] = rx
         _bw["last_tx"] = tx
         _bw["last_time"] = now
+
+
+def _rotation_loop():
+    """Scheduled server rotation: once the session is older than the
+    configured interval, hop to a different server from the chosen pool."""
+    while True:
+        time.sleep(60)
+        try:
+            if not SETTINGS.get("rotation_enabled") or _op_busy():
+                continue
+            if not connected_since or not _last_vpn_mode:
+                continue
+            interval_min = max(15, min(int(SETTINGS.get("rotation_interval_min", 120)), 10080))
+            if time.time() - connected_since < interval_min * 60:
+                continue
+
+            mode = _last_vpn_mode
+            pool_kind = str(SETTINGS.get("rotation_pool", "global"))
+            servers = parse_wg_files() if mode == "wireguard" else parse_ovpn_files()
+
+            if pool_kind == "favorites":
+                favs = set(load_json("favorites.json", []))
+                pool = [s for s in servers if s["file"] in favs]
+            elif pool_kind == "same_country":
+                cc = (_last_server_file or "")[:2].lower()
+                pool = [s for s in servers if s["country_code"].lower() == cc]
+            else:
+                pool = servers
+
+            pool = [s for s in pool if s["file"] != _last_server_file]
+            # Prefer servers known to be reachable
+            reachable = [s for s in pool if _ping_cache.get(s["file"], {}).get("reachable")]
+            pool = reachable or pool
+            if not pool:
+                continue
+
+            pick = random.choice(pool)
+            _add_event("rotation", f"Scheduled rotation: hopping to {pick['file']}")
+            request_connect(mode, pick["file"], source="rotation")
+        except Exception as e:
+            _add_event("rotation", f"Rotation error: {e}")
 
 
 # ===========================================================================
@@ -1481,9 +1760,241 @@ def _ping_refresher():
 # Flask routes
 # ===========================================================================
 
+_LOGIN_PAGE = """<!DOCTYPE html><html><head><title>VPN Control Deck — Login</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>body{font-family:'Segoe UI',sans-serif;background:#060b10;color:#e9f1f7;display:grid;place-items:center;height:100vh;margin:0}
+form{background:#0d1722;border:1px solid #1b2d3e;border-radius:14px;padding:34px;width:300px}
+h1{font-size:17px;margin:0 0 4px}p{font-size:12px;color:#7e95a8;margin:0 0 18px}
+input{width:100%;box-sizing:border-box;padding:10px 12px;background:#060b10;border:1px solid #1b2d3e;border-radius:8px;color:#e9f1f7;font-size:13px;outline:none;margin-bottom:12px}
+input:focus{border-color:#3ee6c4}button{width:100%;padding:10px;background:#3ee6c4;color:#04261e;border:none;border-radius:8px;font-weight:700;font-size:13px;cursor:pointer}
+.err{color:#ff5d73;font-size:12px;margin-bottom:10px}</style></head><body>
+<form method="post"><h1>Control Deck</h1><p>Enter the dashboard password</p>
+{ERR}<input type="password" name="password" placeholder="Password" autofocus>
+<button type="submit">Unlock</button></form></body></html>"""
+
+
+@app.before_request
+def _auth_guard():
+    if not DASHBOARD_PASSWORD:
+        return None
+    if request.path in ("/login", "/metrics") or request.path.startswith("/static"):
+        return None
+    if session.get("auth"):
+        return None
+    if request.path.startswith("/api/"):
+        return jsonify({"ok": False, "error": "Unauthorized"}), 401
+    return redirect("/login")
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not DASHBOARD_PASSWORD:
+        return redirect("/")
+    if request.method == "POST":
+        pw = request.form.get("password", "") or (request.get_json(silent=True) or {}).get("password", "")
+        if secrets.compare_digest(str(pw), DASHBOARD_PASSWORD):
+            session["auth"] = True
+            session.permanent = True
+            return redirect("/")
+        return _LOGIN_PAGE.replace("{ERR}", '<div class="err">Wrong password</div>'), 401
+    return _LOGIN_PAGE.replace("{ERR}", "")
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect("/login" if DASHBOARD_PASSWORD else "/")
+
+
 @app.route("/")
 def index():
     return render_template("dashboard.html")
+
+
+@app.route("/metrics")
+def metrics():
+    """Prometheus exposition format."""
+    st = get_vpn_status()
+    uptime = (time.time() - connected_since) if (st["connected"] and connected_since) else 0
+    lines = [
+        "# TYPE vpn_connected gauge",
+        f"vpn_connected {1 if st['connected'] else 0}",
+        "# TYPE vpn_uptime_seconds gauge",
+        f"vpn_uptime_seconds {uptime:.0f}",
+        "# TYPE vpn_reconnects_total counter",
+        f"vpn_reconnects_total {_reconnects_total}",
+        "# TYPE vpn_drops_total counter",
+        f"vpn_drops_total {_drops_total}",
+        "# TYPE vpn_rx_speed_bytes gauge",
+        f"vpn_rx_speed_bytes {_bw['rx_speed']:.1f}",
+        "# TYPE vpn_tx_speed_bytes gauge",
+        f"vpn_tx_speed_bytes {_bw['tx_speed']:.1f}",
+        "# TYPE vpn_rx_bytes_total counter",
+        f"vpn_rx_bytes_total {_bw['rx_total']}",
+        "# TYPE vpn_tx_bytes_total counter",
+        f"vpn_tx_bytes_total {_bw['tx_total']}",
+        "# TYPE vpn_proxy_socks_up gauge",
+        f"vpn_proxy_socks_up {1 if st['socks_running'] else 0}",
+        "# TYPE vpn_proxy_http_up gauge",
+        f"vpn_proxy_http_up {1 if st['http_proxy_running'] else 0}",
+        "# TYPE vpn_kill_switch_enabled gauge",
+        f"vpn_kill_switch_enabled {1 if KILL_SWITCH else 0}",
+    ]
+    return Response("\n".join(lines) + "\n", mimetype="text/plain; version=0.0.4")
+
+
+@app.route("/api/stats")
+def api_stats():
+    """Aggregated reliability statistics from the session log."""
+    sessions = load_json("sessions.json", [])
+    if not isinstance(sessions, list):
+        sessions = []
+    now = time.time()
+    day_start = now - (now % 86400) - time.timezone
+    total_uptime = 0.0
+    today_uptime = 0.0
+    drops = 0
+    per_server = {}
+    for s in sessions:
+        try:
+            dur = float(s.get("duration", 0))
+            started = float(s.get("started", 0))
+            server = str(s.get("server", "?"))
+            reason = str(s.get("reason", ""))
+        except (TypeError, ValueError):
+            continue
+        total_uptime += dur
+        if started >= day_start:
+            today_uptime += dur
+        if reason == "drop":
+            drops += 1
+        e = per_server.setdefault(server, {"server": server, "mode": s.get("mode", ""),
+                                           "connects": 0, "drops": 0, "total_time": 0.0})
+        e["connects"] += 1
+        e["total_time"] += dur
+        if reason == "drop":
+            e["drops"] += 1
+    # Include the live session
+    if _session_current and connected_since:
+        live = now - connected_since
+        total_uptime += live
+        today_uptime += min(live, now - day_start)
+        e = per_server.setdefault(_session_current["server"],
+                                  {"server": _session_current["server"],
+                                   "mode": _session_current["mode"],
+                                   "connects": 0, "drops": 0, "total_time": 0.0})
+        e["total_time"] += live
+    servers_out = sorted(per_server.values(), key=lambda x: -x["total_time"])
+    for e in servers_out:
+        e["total_time"] = round(e["total_time"], 1)
+    return jsonify({
+        "ok": True,
+        "sessions_total": len(sessions),
+        "uptime_total_sec": round(total_uptime, 1),
+        "uptime_today_sec": round(today_uptime, 1),
+        "drops_logged": drops,
+        "drops_runtime": _drops_total,
+        "reconnects_runtime": _reconnects_total,
+        "servers": servers_out[:50],
+        "recent_sessions": list(reversed(sessions[-15:])),
+    })
+
+
+@app.route("/api/connect/best", methods=["POST"])
+def api_connect_best():
+    """Connect to the lowest-latency reachable server (smart connect)."""
+    data = request.get_json(silent=True) or {}
+    mode = data.get("vpn_mode", "openvpn")
+    protocol = str(data.get("protocol", "udp")).upper()
+    if mode == "wireguard":
+        servers = parse_wg_files()
+    else:
+        servers = [s for s in parse_ovpn_files() if s["protocol"] == protocol]
+    ranked = []
+    for s in servers:
+        p = _ping_cache.get(s["file"])
+        if p and p.get("reachable") and p.get("latency_ms") is not None:
+            ranked.append((p["latency_ms"], s))
+    if not ranked:
+        return jsonify({"ok": False, "error": "No latency data yet — wait for the startup ping sweep or run Ping first"}), 409
+    ranked.sort(key=lambda x: x[0])
+    latency, pick = ranked[0]
+    accepted, msg = request_connect(mode, pick["file"])
+    if not accepted:
+        return jsonify({"ok": False, "error": msg}), 409
+    return jsonify({"ok": True, "message": msg, "server": pick["file"],
+                    "latency_ms": latency, "async": True})
+
+
+@app.route("/api/configs/update", methods=["POST"])
+def api_configs_update():
+    """Download the latest OpenVPN configs from Surfshark and refresh the
+    config folder. (WireGuard configs are key-bound and can't be fetched.)"""
+    url = os.environ.get(
+        "SURFSHARK_CONFIG_URL",
+        "https://my.surfshark.com/vpn/api/v1/server/configurations",
+    )
+    tmp_zip = "/tmp/surfshark_configs.zip"
+    try:
+        r = subprocess.run(
+            ["curl", "-sL", "--max-time", "90", "-o", tmp_zip, "-w", "%{http_code}", url],
+            capture_output=True, text=True, timeout=100,
+        )
+        if r.returncode != 0 or r.stdout.strip() not in ("200",):
+            return jsonify({"ok": False, "error": f"Download failed (HTTP {r.stdout.strip() or '?'})"}), 502
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return jsonify({"ok": False, "error": f"Download failed: {e}"}), 502
+
+    added = updated = unchanged = 0
+    try:
+        with zipfile.ZipFile(tmp_zip) as z:
+            names = [n for n in z.namelist() if n.endswith(".ovpn")]
+            if not names:
+                return jsonify({"ok": False, "error": "Archive contained no .ovpn files"}), 502
+            os.makedirs(CONFIG_DIR, exist_ok=True)
+            for n in names:
+                base = os.path.basename(n)
+                if not base or "/" in base or "\\" in base or base.startswith("."):
+                    continue
+                content = z.read(n)
+                dest = os.path.join(CONFIG_DIR, base)
+                if os.path.exists(dest):
+                    try:
+                        with open(dest, "rb") as f:
+                            if f.read() == content:
+                                unchanged += 1
+                                continue
+                        updated += 1
+                    except OSError:
+                        updated += 1
+                else:
+                    added += 1
+                with open(dest, "wb") as f:
+                    f.write(content)
+    except zipfile.BadZipFile:
+        return jsonify({"ok": False, "error": "Surfshark returned an invalid archive"}), 502
+    except OSError as e:
+        if "Read-only" in str(e):
+            return jsonify({"ok": False, "error": "Config volume is read-only — remove ':ro' from the Open-vpn mount in docker-compose.yml"}), 409
+        return jsonify({"ok": False, "error": f"Write failed: {e}"}), 500
+    finally:
+        try:
+            os.remove(tmp_zip)
+        except OSError:
+            pass
+
+    _add_event("configs", f"Server list updated: {added} added, {updated} updated, {unchanged} unchanged")
+    return jsonify({"ok": True, "added": added, "updated": updated,
+                    "unchanged": unchanged, "total": len(parse_ovpn_files())})
+
+
+@app.route("/api/alerts/test", methods=["POST"])
+def api_alerts_test():
+    if not ((SETTINGS.get("telegram_bot_token") and SETTINGS.get("telegram_chat_id"))
+            or SETTINGS.get("webhook_url")):
+        return jsonify({"ok": False, "error": "Configure Telegram or a webhook URL first"}), 400
+    _send_alert("Test alert", "Alerting is wired up correctly.")
+    return jsonify({"ok": True, "message": "Test alert dispatched"})
 
 
 @app.route("/api/status")
@@ -1597,16 +2108,30 @@ def api_logs():
     return jsonify({"log": read_log(lines)})
 
 
-@app.route("/api/settings", methods=["GET"])
-def api_settings_get():
-    return jsonify({
+def _settings_payload():
+    return {
         "socks_port": SOCKS_PORT,
         "socks_bind": SOCKS_BIND,
         "http_proxy_enabled": HTTP_PROXY_ENABLED,
         "http_proxy_port": HTTP_PROXY_PORT,
         "http_proxy_bind": HTTP_PROXY_BIND,
         "auto_reconnect": AUTO_RECONNECT,
-    })
+        "kill_switch": KILL_SWITCH,
+        "proxy_auth_enabled": bool(SETTINGS.get("proxy_auth_enabled")),
+        "proxy_user": SETTINGS.get("proxy_user", ""),
+        "proxy_pass": SETTINGS.get("proxy_pass", ""),
+        "rotation_enabled": bool(SETTINGS.get("rotation_enabled")),
+        "rotation_interval_min": SETTINGS.get("rotation_interval_min", 120),
+        "rotation_pool": SETTINGS.get("rotation_pool", "global"),
+        "telegram_bot_token": SETTINGS.get("telegram_bot_token", ""),
+        "telegram_chat_id": SETTINGS.get("telegram_chat_id", ""),
+        "webhook_url": SETTINGS.get("webhook_url", ""),
+    }
+
+
+@app.route("/api/settings", methods=["GET"])
+def api_settings_get():
+    return jsonify(_settings_payload())
 
 
 @app.route("/api/settings", methods=["POST"])
@@ -1667,13 +2192,64 @@ def api_settings_post():
     if ar is not None:
         AUTO_RECONNECT = bool(ar)
 
+    # Kill switch
+    global KILL_SWITCH
+    ks = data.get("kill_switch")
+    ks_changed = False
+    if ks is not None and bool(ks) != KILL_SWITCH:
+        KILL_SWITCH = bool(ks)
+        ks_changed = True
+
+    # Proxy authentication
+    auth_changed = False
+    if "proxy_auth_enabled" in data:
+        v = bool(data.get("proxy_auth_enabled"))
+        if v != bool(SETTINGS.get("proxy_auth_enabled")):
+            SETTINGS["proxy_auth_enabled"] = v
+            auth_changed = True
+    for key in ("proxy_user", "proxy_pass"):
+        if key in data:
+            v = str(data.get(key) or "").strip()[:64]
+            if v != SETTINGS.get(key):
+                SETTINGS[key] = v
+                auth_changed = True
+    if SETTINGS.get("proxy_auth_enabled") and not (SETTINGS.get("proxy_user") and SETTINGS.get("proxy_pass")):
+        return jsonify({"ok": False, "error": "Proxy auth requires both username and password"}), 400
+
+    # Scheduled rotation
+    if "rotation_enabled" in data:
+        SETTINGS["rotation_enabled"] = bool(data.get("rotation_enabled"))
+    if "rotation_interval_min" in data:
+        try:
+            iv = int(data.get("rotation_interval_min"))
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "Invalid rotation interval"}), 400
+        if not (15 <= iv <= 10080):
+            return jsonify({"ok": False, "error": "Rotation interval must be 15-10080 minutes"}), 400
+        SETTINGS["rotation_interval_min"] = iv
+    if "rotation_pool" in data:
+        pool = str(data.get("rotation_pool")).strip().lower()
+        if pool not in ("global", "same_country", "favorites"):
+            return jsonify({"ok": False, "error": "Invalid rotation pool"}), 400
+        SETTINGS["rotation_pool"] = pool
+
+    # Alerts
+    for key in ("telegram_bot_token", "telegram_chat_id", "webhook_url"):
+        if key in data:
+            SETTINGS[key] = str(data.get(key) or "").strip()[:256]
+    if SETTINGS.get("webhook_url") and not re.match(r"^https?://", SETTINGS["webhook_url"]):
+        return jsonify({"ok": False, "error": "Webhook URL must start with http:// or https://"}), 400
+
+    if ks_changed:
+        apply_kill_switch()
+
     # Restart proxies with new settings only if a tunnel should be carrying them
-    if socks_changed and _socks_running():
+    if (socks_changed or auth_changed) and _socks_running():
         stop_socks()
         start_socks()
         _add_event("proxy", "Restarted microsocks after settings update")
 
-    if http_changed:
+    if (http_changed or auth_changed):
         if HTTP_PROXY_ENABLED and _read_mode_file():
             stop_tinyproxy()
             start_tinyproxy()
@@ -1682,15 +2258,8 @@ def api_settings_post():
             stop_tinyproxy()
             _add_event("proxy", "Stopped tinyproxy after settings update")
 
-    return jsonify({
-        "ok": True,
-        "socks_port": SOCKS_PORT,
-        "socks_bind": SOCKS_BIND,
-        "http_proxy_enabled": HTTP_PROXY_ENABLED,
-        "http_proxy_port": HTTP_PROXY_PORT,
-        "http_proxy_bind": HTTP_PROXY_BIND,
-        "auto_reconnect": AUTO_RECONNECT,
-    })
+    _persist_settings()
+    return jsonify({"ok": True, **_settings_payload()})
 
 
 @app.route("/api/autostart", methods=["GET"])
@@ -1767,6 +2336,7 @@ def api_bandwidth():
         "tx_speed": round(_bw["tx_speed"], 1),
         "rx_total": _bw["rx_total"],
         "tx_total": _bw["tx_total"],
+        "history": list(_bw_history),
     })
 
 
@@ -2010,11 +2580,34 @@ def _start_background_threads():
     threading.Thread(target=_bandwidth_monitor, daemon=True).start()
     threading.Thread(target=_ping_refresher, daemon=True).start()
     threading.Thread(target=_boot_autostart, daemon=True).start()
+    threading.Thread(target=_rotation_loop, daemon=True).start()
+
+
+def _init_secret_key():
+    """Stable random secret so login sessions survive restarts."""
+    path = os.path.join(DATA_DIR, "secret.key")
+    try:
+        with open(path) as f:
+            key = f.read().strip()
+    except OSError:
+        key = ""
+    if len(key) < 32:
+        key = secrets.token_hex(32)
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(key)
+        except OSError:
+            pass
+    app.secret_key = key
 
 
 if __name__ == "__main__":
     os.makedirs(DATA_DIR, exist_ok=True)
+    _init_secret_key()
     _record_original_gateway()
+    _load_persisted_settings()
+    apply_kill_switch()
     _save_autostart_config(_load_autostart_config())
     last = _load_last_success()
     if last:

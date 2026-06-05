@@ -7,7 +7,7 @@ Open-vpn/
 Wireguard/
 
 # Runtime data (user preferences, not code)
-data/
+data*/
 
 # Backup files
 *.bak

@@ -1,6 +1,8 @@
 services:
   vpn-proxy:
     build: .
+    # Or use the prebuilt image instead of building locally:
+    # image: ghcr.io/ammartee/surfshark-docker-vpn-proxy:latest
     container_name: surfshark-vpn-proxy
     cap_add:
       - NET_ADMIN
@@ -14,14 +16,15 @@ services:
       - "8000:8000"
       - "8888:8888"
     volumes:
-      - ./Open-vpn:/vpn/config:ro
+      - ./Open-vpn:/vpn/config            # writable so "Update server list" works
       - ./auth.txt:/vpn/auth.txt:ro
       - ./Wireguard:/vpn/wireguard:ro
       - ./wireguard.txt:/vpn/wireguard.txt:ro
       - ./data:/vpn/data
     environment:
       - SOCKS_PORT=1080
-      # - LAN_NETWORK=192.168.1.0/24  # Set to your LAN subnet to keep dashboard reachable after VPN connects
+      # - DASHBOARD_PASSWORD=change-me    # set to require login on the dashboard
+      # - LAN_NETWORK=192.168.1.0/24      # your LAN subnet, keeps dashboard reachable after VPN connects
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8000/api/status"]
@@ -32,3 +35,14 @@ services:
     sysctls:
       - net.ipv6.conf.all.disable_ipv6=1
       - net.ipv4.conf.all.src_valid_mark=1
+
+  # Optional: auto-update the container when a new image is published to GHCR.
+  # Only useful with the prebuilt image (uncomment `image:` above and comment
+  # out `build:`). Start with:  docker compose --profile autoupdate up -d
+  watchtower:
+    image: containrrr/watchtower
+    profiles: ["autoupdate"]
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --interval 21600 --cleanup surfshark-vpn-proxy

@@ -24,6 +24,17 @@ Route specific app traffic (Telegram, browsers, torrent clients) through the VPN
   - Live event stream for reconnect and proxy lifecycle actions
   - Browser notifications on connect/disconnect/reconnect
   - Configurable SOCKS5 and HTTP proxy settings
+- **Kill switch** -- firewall-level fail-closed: if the tunnel drops, traffic is blocked instead of leaking out your real IP
+- **Proxy authentication** -- optional username/password on both SOCKS5 and HTTP proxies
+- **Dashboard login** -- optional password gate (set `DASHBOARD_PASSWORD`)
+- **Smart connect** -- one click connects to the lowest-latency reachable server
+- **Scheduled rotation** -- hop to a new server every N minutes (global / same-country / favorites pool)
+- **Server list auto-update** -- pull the latest OpenVPN configs from Surfshark from the dashboard
+- **Stats page** -- per-server reliability (connects, drops, tunnel time) and session history
+- **Bandwidth sparkline** -- live throughput chart on the connection card
+- **Alerts** -- Telegram bot or webhook notifications on drops, recoveries and failed reconnects
+- **Prometheus metrics** -- `/metrics` endpoint for Grafana dashboards
+- **Prebuilt images** -- multi-arch (amd64/arm64) images published to GHCR on every commit
 
 ## Architecture
 
@@ -152,6 +163,11 @@ All endpoints are served from the Flask app on port 8000.
 | POST | `/api/profiles/activate` | Activate a saved profile |
 | GET | `/api/geoip` | GeoIP lookup of current VPN IP |
 | GET | `/api/dnstest` | DNS leak test |
+| GET | `/api/stats` | Uptime, drop and per-server reliability statistics |
+| POST | `/api/connect/best` | Connect to the lowest-latency reachable server |
+| POST | `/api/configs/update` | Download the latest OpenVPN configs from Surfshark |
+| POST | `/api/alerts/test` | Send a test alert to Telegram/webhook |
+| GET | `/metrics` | Prometheus metrics (always unauthenticated) |
 
 ## Configuration
 
@@ -165,6 +181,10 @@ Set in `docker-compose.yml`:
 | `SOCKS_BIND` | `0.0.0.0` | SOCKS5 bind address |
 | `HTTP_PORT` | `8888` | HTTP proxy port |
 | `HTTP_BIND` | `0.0.0.0` | HTTP proxy bind address |
+| `DASHBOARD_PASSWORD` | _(unset)_ | Set to require login on the dashboard |
+| `LAN_NETWORK` | _(auto)_ | Comma-separated CIDRs kept reachable outside the tunnel |
+| `OPENVPN_CONNECT_TIMEOUT` | `75` | Seconds to wait for the OpenVPN tunnel |
+| `HEALTH_PROBE_INTERVAL` | `30` | Seconds between tunnel connectivity probes |
 
 ### Ports
 
@@ -183,6 +203,38 @@ Set in `docker-compose.yml`:
 | `./auth.txt` | `/vpn/auth.txt` | OpenVPN credentials (read-only) |
 | `./wireguard.txt` | `/vpn/wireguard.txt` | WireGuard keys (read-only) |
 | `./data` | `/vpn/data` | Persistent data (favorites, profiles, recent, autostart, last-success) |
+
+## Prebuilt Images & Auto-Updates
+
+Multi-arch images (amd64/arm64) are published to GHCR by CI on every push to `master`, plus a weekly rebuild for Alpine security updates:
+
+```yaml
+# docker-compose.yml — use the prebuilt image instead of building locally
+services:
+  vpn-proxy:
+    image: ghcr.io/ammartee/surfshark-docker-vpn-proxy:latest
+    # build: .   <- comment out
+```
+
+To auto-update the running container whenever a new image is published, start the bundled Watchtower profile:
+
+```bash
+docker compose --profile autoupdate up -d
+```
+
+## Multiple Exit Countries
+
+Run one container per exit with its own ports using `compose.multi.yml` (SOCKS5 `:1081` -> UK, `:1082` -> US out of the box):
+
+```bash
+docker compose -f compose.multi.yml up -d --build
+```
+
+Connect each instance to its country once, enable Boot Auto-Start, and every restart reconnects automatically.
+
+## Kill Switch Notes
+
+When enabled (Settings -> Kill Switch), an iptables chain blocks all egress that doesn't go through `tun*`/`wg*`. Still allowed outside the tunnel so the system can recover: loopback, LAN/Docker subnets, VPN handshake ports (51820/1194/1443), DNS, and ICMP. If the tunnel dies, proxy clients get connection-refused instead of silently leaking through your real IP while auto-reconnect works.
 
 ## Troubleshooting
 
